@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var mantenerMonitorHasta = Date.distantPast
     var colaTranscripcion: [URL] = []
     var transcribiendo = false
+    var tokenAviso = 0
 
     func applicationDidFinishLaunching(_ n: Notification) {
         AppDelegate.compartido = self
@@ -113,7 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     /// Último video grabado: el .mov más reciente de ~/Movies (también cuenta lo grabado con el comando o antes de reiniciar la app).
     func buscarUltimoVideo() {
-        let dir = URL(fileURLWithPath: NSString(string: "~/Movies/Note-Taker").expandingTildeInPath)
+        let dir = URL(fileURLWithPath: carpetaVideos)
         let claves: [URLResourceKey] = [.contentModificationDateKey]
         let archivos = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: claves)) ?? []
         let grabaciones = archivos.filter { $0.lastPathComponent.hasPrefix("nota_") && $0.pathExtension == "mov" }
@@ -123,6 +124,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             return fa < fb
         }
         estado.ultimoArchivo = ultimo?.path
+        actualizarUltimoTranscrito()
+    }
+
+    /// Aviso chico bajo el botón; se quita solo (si se vuelve a pulsar, el plazo se reinicia).
+    func mostrarAvisoYaTranscrito() {
+        tokenAviso += 1
+        let mio = tokenAviso
+        estado.avisoYaTranscrito = true
+        Task {
+            try? await Task.sleep(nanoseconds: 3_500_000_000)
+            if tokenAviso == mio { estado.avisoYaTranscrito = false }
+        }
+    }
+
+    /// ¿El último video ya tiene su transcripción en la carpeta de transcripciones?
+    func actualizarUltimoTranscrito() {
+        guard let r = estado.ultimoArchivo, !r.isEmpty else { estado.ultimoTranscrito = nil; return }
+        let base = URL(fileURLWithPath: r).deletingPathExtension().lastPathComponent
+        estado.ultimoTranscrito = FileManager.default.fileExists(atPath: carpetaNotas + "/" + base + ".txt")
     }
 
     func mostrarPopover() {
@@ -179,6 +199,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         switch a {
         case .alternarGrabacion: alternar()
         case .calibrarVoz: calibrar()
+        case .transcribirUltimo:
+            buscarUltimoVideo()
+            if estado.ultimoTranscrito == true {
+                mostrarAvisoYaTranscrito()
+            } else if let r = estado.ultimoArchivo, !r.isEmpty {
+                iniciarTranscripcion(URL(fileURLWithPath: r))
+            } else {
+                estado.mensaje = "Aún no hay videos grabados."
+            }
         case .abrirCarpetaNotas:
             try? FileManager.default.createDirectory(atPath: carpetaNotas, withIntermediateDirectories: true)
             NSWorkspace.shared.open(URL(fileURLWithPath: carpetaNotas))
@@ -276,6 +305,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         Task {
             let r = await transcribirVideo(url, idioma: ajustes.idiomaWhisper)
             estado.transcripcion = r.ok ? .lista(r.texto) : .error(r.texto)
+            actualizarUltimoTranscrito()
             procesarCola()
         }
     }
@@ -369,6 +399,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         case "ocultar": popover.performClose(nil)
         case "calibrar": calibrar()
         case "modo": ejecutar(.modoMicrofono)
+        case "transcribir": if let n = n { ajustes.transcribirAlTerminar = (n != 0) }
+        case "transcribir-ultimo": ejecutar(.transcribirUltimo)
         case "calidad": if let n = n { ajustes.calidadVideo = max(0, min(presetsVideo.count - 1, n)) }
         case "mic": if let db = db { ajustes.gananciaMicDB = max(0, min(36, db)) }
         case "sistema": if let db = db { ajustes.gananciaSisDB = max(-18, min(12, db)) }

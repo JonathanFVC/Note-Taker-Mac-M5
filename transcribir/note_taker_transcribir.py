@@ -1,7 +1,7 @@
 """Transcribe un video o audio con Whisper y deja el .txt y el .srt en una carpeta.
 
 Lo lanzan la app y el comando de Note Taker al terminar una grabación; también se puede usar solo:
-    python note_taker_transcribir.py grabacion.mov --out ~/Desktop/Note-Taker --lang es --ultima
+    python note_taker_transcribir.py grabacion.mov --out ~/Movies/Note-Taker/Note-Taker-Transcriptions --lang es --ultima
 """
 import argparse
 import os
@@ -11,7 +11,7 @@ import sys
 import whisper
 from whisper.utils import get_writer
 
-CARPETA_SALIDA = os.path.expanduser("~/Desktop/Note-Taker")
+CARPETA_SALIDA = os.path.join(os.path.expanduser("~/Movies"), "Note-Taker", "Note-Taker-Transcriptions")
 
 
 def elegir_dispositivo():

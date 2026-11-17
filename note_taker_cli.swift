@@ -23,12 +23,20 @@ struct Opciones {
     var bpp = 0.05
     var minBitrate = 250_000
     var pantalla: Int? = nil
-    var salida = NSString(string: "~/Movies/Note-Taker").expandingTildeInPath
+    var salida = carpetaVideos
     var transcribir = true
     var idioma = "es"
     var conservarCrudo = false
     var detener = false
 }
+
+/// Carpeta de películas del usuario: en disco siempre es `Movies` (Finder la muestra como «Películas» en español).
+let carpetaPeliculas = NSSearchPathForDirectoriesInDomains(.moviesDirectory, .userDomainMask, true).first ?? NSString(string: "~/Movies").expandingTildeInPath
+/// Todo vive en <Películas>/Note-Taker: los videos en Note-Taker-Videos y las transcripciones en Note-Taker-Transcriptions.
+let carpetaNoteTaker = carpetaPeliculas + "/Note-Taker"
+let carpetaVideos = carpetaNoteTaker + "/Note-Taker-Videos"
+/// Transcripciones; ULTIMA_TRANSCRIPCION.txt siempre es la más reciente.
+let carpetaNotas = carpetaNoteTaker + "/Note-Taker-Transcriptions"
 
 let dirTrabajo = NSString(string: "~/.note-taker").expandingTildeInPath
 let archivoPid = dirTrabajo + "/grabando.pid"
@@ -37,7 +45,7 @@ func ayuda() -> Never {
     print("""
     note-taker — graba la pantalla completa con el audio del sistema y tu micrófono (sin BlackHole).
 
-      note-taker                 inicia; Ctrl+C detiene, deja el .mov en ~/Movies/Note-Taker y lo transcribe con Whisper
+      note-taker                 inicia; Ctrl+C detiene, deja el .mov en Películas/Note-Taker/Note-Taker-Videos y lo transcribe con Whisper
       note-taker stop            detiene una grabación en curso (desde otra terminal)
       --segundos N                    se detiene solo a los N segundos
       --sin-mic                       solo audio del sistema
@@ -47,7 +55,7 @@ func ayuda() -> Never {
       --nativa                        resolución nativa del video
       --fps N                         cuadros por segundo (por defecto, los del nivel)
       --pantalla N                    pantalla número N (por defecto la principal)
-      --salida DIR                    carpeta de salida (por defecto ~/Movies/Note-Taker)
+      --salida DIR                    carpeta de salida del video (por defecto ~/Movies/Note-Taker/Note-Taker-Videos)
       --sin-transcribir               no transcribe con Whisper al terminar
       --idioma CODIGO                 idioma de la transcripción: es (por defecto), en o auto
       --conservar-crudo               conserva el archivo con las pistas separadas (diagnóstico)
@@ -95,7 +103,7 @@ func presetCLI(_ nombre: String) -> (ancho: Double, fps: Int, bpp: Double, minBr
     }
 }
 
-/// Corre Whisper sobre el video y deja la transcripción en ~/Desktop/Note-Taker (ULTIMA_TRANSCRIPCION.txt es siempre la más reciente).
+/// Corre Whisper sobre el video y deja la transcripción en ~/Movies/Note-Taker/Note-Taker-Transcriptions (ULTIMA_TRANSCRIPCION.txt es siempre la más reciente).
 func transcribirCLI(_ video: URL, idioma: String) -> Bool {
     let envPy = ProcessInfo.processInfo.environment["NOTE_TAKER_PYTHON"]
     let porDefecto = NSString(string: "~/.note-taker/whisper-venv/bin/python").expandingTildeInPath
@@ -108,7 +116,7 @@ func transcribirCLI(_ video: URL, idioma: String) -> Bool {
         aviso("⚠️ Falta \(script): vuelve a ejecutar note_taker_cli_compilar.sh.")
         return false
     }
-    let carpeta = NSString(string: "~/Desktop/Note-Taker").expandingTildeInPath
+    let carpeta = carpetaNotas
     print("📝 Transcribiendo con Whisper (idioma: \(idioma)); puede tardar unos minutos…")
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/nice")

@@ -555,7 +555,7 @@ final class Motor: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioDat
         if modo == .monitor { await detenerStream() }
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         let ts = f.string(from: Date())
-        let salida = NSString(string: "~/Movies/Note-Taker").expandingTildeInPath
+        let salida = carpetaVideos
         let trabajo = NSString(string: "~/.note-taker").expandingTildeInPath
         try? FileManager.default.createDirectory(atPath: salida, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(atPath: trabajo, withIntermediateDirectories: true)

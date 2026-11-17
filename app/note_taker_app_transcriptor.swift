@@ -1,8 +1,13 @@
 // Transcripción con Whisper al terminar la grabación (Python + openai-whisper; ver instalar_whisper.sh).
 import Foundation
 
-/// Carpeta del escritorio con las transcripciones; ULTIMA_TRANSCRIPCION.txt siempre es la más reciente.
-let carpetaNotas = NSString(string: "~/Desktop/Note-Taker").expandingTildeInPath
+/// Carpeta de películas del usuario: en disco siempre es `Movies` (Finder la muestra como «Películas» en español).
+let carpetaPeliculas = NSSearchPathForDirectoriesInDomains(.moviesDirectory, .userDomainMask, true).first ?? NSString(string: "~/Movies").expandingTildeInPath
+/// Todo vive en <Películas>/Note-Taker: los videos en Note-Taker-Videos y las transcripciones en Note-Taker-Transcriptions.
+let carpetaNoteTaker = carpetaPeliculas + "/Note-Taker"
+let carpetaVideos = carpetaNoteTaker + "/Note-Taker-Videos"
+/// Transcripciones; ULTIMA_TRANSCRIPCION.txt siempre es la más reciente.
+let carpetaNotas = carpetaNoteTaker + "/Note-Taker-Transcriptions"
 
 enum EstadoTranscripcion: Equatable {
     case ninguna

@@ -25,7 +25,6 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSMicrophoneUsageDescription</key><string>Para grabar tu voz junto con el audio de la Mac.</string>
-<key>NSDesktopFolderUsageDescription</key><string>Para guardar las transcripciones en la carpeta Note-Taker del escritorio.</string>
 <key>NSScreenCaptureUsageDescription</key><string>Para grabar la pantalla y el audio de la Mac.</string>
 <key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>local.notetaker</string><key>CFBundleURLSchemes</key><array><string>notetaker</string></array></dict></array>
 </dict></plist>

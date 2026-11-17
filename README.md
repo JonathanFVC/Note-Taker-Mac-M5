@@ -4,7 +4,7 @@
 
 ## Notas principales
 
-- **Al terminar cada grabación, Whisper transcribe solo y deja en el escritorio la carpeta `Note-Taker` con la última transcripción**: el archivo `ULTIMA_TRANSCRIPCION.txt` siempre es la más reciente (y `ULTIMA_TRANSCRIPCION.srt`, con tiempos); cada grabación conserva además su propio `.txt` y `.srt`.
+- **Al terminar cada grabación, Whisper transcribe solo y deja la transcripción en `Películas/Note-Taker/Note-Taker-Transcriptions`** (la carpeta `Movies` de tu usuario; Finder la muestra como «Películas»): el archivo `ULTIMA_TRANSCRIPCION.txt` siempre es la más reciente (y `ULTIMA_TRANSCRIPCION.srt`, con tiempos); cada grabación conserva además su propio `.txt` y `.srt`. Los videos quedan junto, en `Películas/Note-Taker/Note-Taker-Videos`.
 - **Activa el «Aislamiento de voz», el supresor de ruido de macOS: es necesario al 100 % para tener la mayor precisión en la transcripción.** Así Whisper recibe tu voz limpia, sin el ruido de fondo ni las voces lejanas. Se activa una sola vez: en el panel, fila «Aislamiento de voz» › **Activar**, y eliges «Aislamiento de voz» en el menú de macOS (macOS recuerda la elección para la app). En una prueba, el ruido de fondo entre frases bajó de −44.8 a −108.5 dB conservando la voz. **Pasos exactos: [Cómo activar el Aislamiento de voz](#cómo-activar-el-aislamiento-de-voz-paso-a-paso).**
 - **Dile a tu IA de preferencia que, con esa transcripción, te arme un «Resumen ejecutivo»: saldrá muy preciso**, porque el resumen parte de lo que realmente se dijo en la junta y no de tus notas ni de tu memoria. El botón **«Copiar transcripción»** del panel la deja lista para pegar. Prompt sugerido:
 
@@ -25,6 +25,8 @@ Note Taker junta en un solo paso lo que normalmente son tres herramientas: un gr
 - Graba la **pantalla principal**, el **audio del sistema** (se graba igual con audífonos Bluetooth, en mute o con el volumen al 5 %, porque ScreenCaptureKit lo toma antes del dispositivo de salida) y el **micrófono**, en un solo `.mov` con **una pista de audio mezclada** (AAC, 48 kHz, estéreo).
 - **Micrófono integrado de la Mac por defecto**, aunque la entrada del sistema sea otra.
 - **Transcribe con Whisper al terminar** (modelo `turbo`; idioma Español, English o detectar). Corre con prioridad baja para no estorbar.
+- **Puedes decidir a media junta:** el interruptor de transcripción del panel se puede activar o desactivar **mientras grabas**; al detener se aplica lo que haya quedado.
+- **¿Se te olvidó activarla? Transcribe después:** el botón **«Transcribir último video grabado»** transcribe el video más reciente. Junto a él, un aviso dice **«Último video transcrito»** (verde) o **«Último video no transcrito»** (rojo); si ya existe la transcripción, al pulsar el botón sale un aviso chico, «Ya está transcrito», y no se repite el trabajo.
 - **Nivel de tu voz y del audio de la Mac** con medidores y «Ajustar mi voz solo» *(solo en la app)*.
 - **Aislamiento de voz de macOS** *(solo en la app)*: el ruido de fondo entre frases bajó de −44.8 a −108.5 dB en una prueba, conservando la voz. macOS **no permite activarlo por código**: el botón abre su menú y ahí se elige; macOS recuerda la elección **por app**, así que en Note Taker se activa una sola vez.
 - **Niveles de video** (solo cambian el video; el audio no cambia):
@@ -43,9 +45,9 @@ Note Taker junta en un solo paso lo que normalmente son tres herramientas: un gr
 
 | Qué | Dónde |
 |---|---|
-| Videos | `~/Movies/Note-Taker/nota_AAAA-MM-DD_HH-MM-SS.mov` |
-| Transcripciones | `~/Desktop/Note-Taker/nota_….txt` y `nota_….srt` |
-| **La última transcripción** | `~/Desktop/Note-Taker/ULTIMA_TRANSCRIPCION.txt` (y `.srt`) |
+| Videos | `~/Movies/Note-Taker/Note-Taker-Videos/nota_AAAA-MM-DD_HH-MM-SS.mov` |
+| Transcripciones | `~/Movies/Note-Taker/Note-Taker-Transcriptions/nota_….txt` y `nota_….srt` |
+| **La última transcripción** | `~/Movies/Note-Taker/Note-Taker-Transcriptions/ULTIMA_TRANSCRIPCION.txt` (y `.srt`) |
 | Registros | `~/.note-taker/` (`app.log`, `transcripcion.log`) |
 
 ## Requisitos
@@ -72,7 +74,6 @@ La primera vez, macOS pedirá permisos para «NoteTaker»:
 
 1. **Grabación de pantalla y audio del sistema** (Ajustes del Sistema › Privacidad y seguridad). Actívalo y pulsa **«Reiniciar app»** en el panel.
 2. **Micrófono.**
-3. Puede pedir acceso a la carpeta **Escritorio** la primera vez que guarde una transcripción.
 
 Si ya tienes Whisper en otro entorno de Python, enlaza `~/.note-taker/whisper-venv` a tu entorno (`ln -s /ruta/a/tu/entorno ~/.note-taker/whisper-venv`). Para el comando de terminal también sirve la variable `NOTE_TAKER_PYTHON` (ruta del `python` de ese entorno); la app, al abrirse desde Finder, no hereda variables de la terminal.
 
@@ -110,7 +111,7 @@ El Aislamiento de voz es el supresor de ruido de macOS: quita el ruido de fondo 
 
 ## Uso
 
-**App:** clic en el ícono de onda de la barra de menú abre el panel; clic derecho, menú rápido. El panel tiene el control de transcripción: interruptor, idioma, estado («Transcribiendo…» y «Lista: …»), **Abrir carpeta** y **Copiar transcripción**. El arranque automático al iniciar sesión viene **apagado** (se activa desde el panel).
+**App:** clic en el ícono de onda de la barra de menú abre el panel; clic derecho, menú rápido. El panel tiene el control de transcripción: interruptor (automática o manual), idioma, estado («Transcribiendo…» y «Lista: …»), **Abrir carpeta**, **Copiar transcripción**, el botón **«Transcribir último video grabado»** y el aviso verde o rojo del último video. El arranque automático al iniciar sesión viene **apagado** (se activa desde el panel).
 
 **Comando:**
 
@@ -133,10 +134,10 @@ note-taker --sin-transcribir    # solo graba
 | `--nativa` | resolución nativa del video |
 | `--fps N` | cuadros por segundo (por defecto, los del nivel) |
 | `--pantalla N` | pantalla número N (por defecto, la principal) |
-| `--salida DIR` | carpeta de salida del video (por defecto `~/Movies/Note-Taker`) |
+| `--salida DIR` | carpeta de salida del video (por defecto `~/Movies/Note-Taker/Note-Taker-Videos`) |
 | `--conservar-crudo` | conserva el archivo con las pistas separadas (diagnóstico) |
 
-**Esquema de URL de la app** (para Atajos de macOS o scripts): `notetaker://iniciar`, `detener`, `alternar`, `mostrar`, `ocultar`, `calibrar`, `modo`, `mic?db=N`, `sistema?db=N`, `calidad?n=0..3` (0 Ultra ahorro, 1 Baja, 2 Media, 3 Alta).
+**Esquema de URL de la app** (para Atajos de macOS o scripts): `notetaker://iniciar`, `detener`, `alternar`, `mostrar`, `ocultar`, `calibrar`, `modo`, `transcribir?n=0|1` (apaga o enciende la transcripción), `transcribir-ultimo` (transcribe el último video grabado), `mic?db=N`, `sistema?db=N`, `calidad?n=0..3` (0 Ultra ahorro, 1 Baja, 2 Media, 3 Alta).
 
 También puedes transcribir cualquier video o audio con el script suelto: `~/.note-taker/whisper-venv/bin/python transcribir/note_taker_transcribir.py archivo.mov --lang es --ultima`.
 

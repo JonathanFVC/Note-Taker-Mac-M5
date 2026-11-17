@@ -56,12 +56,16 @@ final class EstadoUI: ObservableObject {
     @Published var aislamientoActivo = false
     @Published var aislamientoConocido = false
     @Published var transcripcion: EstadoTranscripcion = .ninguna
+    /// nil = aún no hay videos; true/false = si el último video ya tiene su transcripción.
+    @Published var ultimoTranscrito: Bool?
+    /// Aviso chico («Ya está transcrito») que se quita solo a los pocos segundos.
+    @Published var avisoYaTranscrito = false
 }
 
 enum Accion {
     case alternarGrabacion, calibrarVoz, mostrarFinder, abrirAjustesPantalla, abrirAjustesMic, salir
     case login(Bool), volumenEntrada(Double), elegirMic(String), reiniciar, modoMicrofono
-    case abrirCarpetaNotas, copiarTranscripcion
+    case abrirCarpetaNotas, copiarTranscripcion, transcribirUltimo
 }
 
 struct Medidor: View {
@@ -228,39 +232,65 @@ struct VistaPrincipal: View {
         }
     }
 
+    var transcribiendoAhora: Bool { if case .enCurso = e.transcripcion { return true }; return false }
+
     var seccionTranscripcion: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Transcripción (Whisper)").font(.subheadline).bold()
                 Spacer()
+                Text(a.transcribirAlTerminar ? "automática" : "manual").font(.caption2).foregroundColor(.secondary)
                 Toggle("", isOn: $a.transcribirAlTerminar).labelsHidden().toggleStyle(.switch).controlSize(.mini)
             }
-            if a.transcribirAlTerminar {
-                Picker("", selection: $a.idiomaWhisper) {
-                    ForEach(idiomasWhisper, id: \.codigo) { Text($0.nombre).tag($0.codigo) }
-                }
-                .pickerStyle(.menu).labelsHidden()
-                estadoTranscripcion
-                HStack {
-                    Button("Abrir carpeta") { accion(.abrirCarpetaNotas) }
-                    Button("Copiar transcripción") { accion(.copiarTranscripcion) }
-                }.controlSize(.small)
-                Text("Deja en el escritorio la carpeta «Note-Taker» con la última transcripción: pégasela a tu IA y pídele un «Resumen ejecutivo».")
-                    .font(.caption2).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+            Picker("", selection: $a.idiomaWhisper) {
+                ForEach(idiomasWhisper, id: \.codigo) { Text($0.nombre).tag($0.codigo) }
             }
+            .pickerStyle(.menu).labelsHidden()
+            estadoTranscripcion
+            HStack {
+                Button("Abrir carpeta") { accion(.abrirCarpetaNotas) }
+                Button("Copiar transcripción") { accion(.copiarTranscripcion) }
+            }.controlSize(.small)
+            Button(action: { accion(.transcribirUltimo) }) {
+                Text("Transcribir último video grabado").frame(maxWidth: .infinity)
+            }
+            .controlSize(.small)
+            .disabled(e.ultimoArchivo == nil || e.fase != .inactivo || transcribiendoAhora)
+            if e.avisoYaTranscrito {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle.fill")
+                    Text("Ya está transcrito").bold()
+                }
+                .font(.caption).foregroundColor(.green)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Color.green.opacity(0.18)).cornerRadius(6)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+            Text("Guarda la última transcripción en «Note-Taker-Transcriptions» (dentro de Películas › Note-Taker): pégasela a tu IA y pídele un «Resumen ejecutivo».")
+                .font(.caption2).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 
     @ViewBuilder var estadoTranscripcion: some View {
-        switch e.transcripcion {
-        case .ninguna:
-            Text("Se transcribe sola al terminar cada grabación.").font(.caption).foregroundColor(.secondary)
-        case .enCurso(let n):
+        if case .enCurso(let n) = e.transcripcion {
             Text("Transcribiendo \(n)…").font(.caption).foregroundColor(.orange).lineLimit(1).truncationMode(.middle)
-        case .lista(let r):
-            Text("Lista: \(URL(fileURLWithPath: r).lastPathComponent)").font(.caption).foregroundColor(.green).lineLimit(1).truncationMode(.middle)
-        case .error(let m):
-            Text(m).font(.caption).foregroundColor(.red).fixedSize(horizontal: false, vertical: true)
+        } else {
+            if case .error(let m) = e.transcripcion {
+                Text(m).font(.caption).foregroundColor(.red).fixedSize(horizontal: false, vertical: true)
+            }
+            avisoUltimoVideo
+        }
+    }
+
+    @ViewBuilder var avisoUltimoVideo: some View {
+        if let hecho = e.ultimoTranscrito {
+            Text(hecho ? "Último video transcrito" : "Último video no transcrito")
+                .font(.caption).bold().foregroundColor(hecho ? .green : .red)
+            if let r = e.ultimoArchivo {
+                Text(URL(fileURLWithPath: r).lastPathComponent).font(.caption2).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)
+            }
+        } else {
+            Text("Aún no hay videos grabados.").font(.caption).foregroundColor(.secondary)
         }
     }
 
