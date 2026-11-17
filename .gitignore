@@ -1,0 +1,5 @@
+# binarios y salidas de compilacion
+*.app
+note-taker
+.DS_Store
+__pycache__/
