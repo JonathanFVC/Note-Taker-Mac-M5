@@ -20,6 +20,8 @@ Note Taker junta en un solo paso lo que normalmente son tres herramientas: un gr
 - **App de barra de menú «Note Taker»** (`app/`): iniciar y detener, niveles de voz y del audio de la Mac con medidores, «Aislamiento de voz» de macOS, calidad de video, atajo global y el panel de transcripción.
 - **Comando `note-taker`** (raíz): lo mismo desde la terminal.
 
+<p align="center"><img src="imagenes/panel-note-taker.png" alt="Panel de Note Taker: voz, audio de la Mac, calidad de video y transcripción con Whisper" width="340"></p>
+
 ## Qué hace
 
 - Graba la **pantalla principal**, el **audio del sistema** (se graba igual con audífonos Bluetooth, en mute o con el volumen al 5 %, porque ScreenCaptureKit lo toma antes del dispositivo de salida) y el **micrófono**, en un solo `.mov` con **una pista de audio mezclada** (AAC, 48 kHz, estéreo).
