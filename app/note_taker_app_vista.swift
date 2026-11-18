@@ -60,8 +60,6 @@ enum Fase { case inactivo, grabando, cerrando }
 final class EstadoUI: ObservableObject {
     @Published var fase: Fase = .inactivo
     @Published var segundos = 0
-    @Published var nivelSis: Double = -90
-    @Published var nivelMic: Double = -90
     @Published var consejoVoz = "Habla para ver tu nivel"
     @Published var micVivo = false
     @Published var calibrando = false
@@ -88,6 +86,8 @@ final class EstadoUI: ObservableObject {
     @Published var pantallas: [OpcionPantalla] = []
     /// Alto real del contenido del panel (lo mide la vista); el panel se limita al alto de la pantalla y se desplaza si no cabe.
     @Published var altoPanel: CGFloat = 640
+    /// Tope de alto del panel según las pantallas conectadas (se calcula al abrir el panel).
+    @Published var altoMaximoPanel: CGFloat = 800
     @Published var ventanaTexto = ""
     /// True mientras Whisper trabaja o hay videos en cola: desactiva el botón y activa la rueda de carga azul.
     @Published var transcribiendo = false
@@ -104,38 +104,49 @@ enum Accion {
     case abrirCarpetaNotas, copiarTranscripcion, transcribirUltimo, elegirArea, elegirVentana
 }
 
-struct Medidor: View {
-    var db: Double
-    var body: some View {
-        GeometryReader { g in
-            let frac = CGFloat(max(0, min(1, (db + 60) / 60)))
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 3).fill(Color.gray.opacity(0.25))
-                Rectangle().fill(Color.green.opacity(0.20))
-                    .frame(width: g.size.width * 15 / 60).offset(x: g.size.width * 42 / 60)
-                RoundedRectangle(cornerRadius: 3).fill(color)
-                    .frame(width: max(2, g.size.width * frac))
-            }
-        }
-        .frame(height: 10)
+/// Barra del medidor de voz / audio de la Mac. Es una vista de AppKit que se dibuja sola cuando cambia su nivel: SwiftUI no interviene, así que
+/// las ~14 lecturas por segundo no recalculan el panel (antes cada lectura lo recalculaba entero y la app llegaba a ≈100 % de un núcleo).
+final class MedidorVista: NSView {
+    var nivel: Double = -90 { didSet { if abs(nivel - oldValue) >= 0.25 { needsDisplay = true } } }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 10) }
+
+    var color: NSColor {
+        if nivel > -3 { return .systemRed }
+        if nivel > -18 { return .systemGreen }
+        if nivel > -36 { return .systemYellow }
+        return .systemGray
     }
-    var color: Color {
-        if db > -3 { return .red }
-        if db > -18 { return .green }
-        if db > -36 { return .yellow }
-        return .gray
+
+    override func draw(_ dirtyRect: NSRect) {
+        let r = bounds
+        let frac = CGFloat(max(0, min(1, (nivel + 60) / 60)))
+        NSColor.systemGray.withAlphaComponent(0.25).setFill()
+        NSBezierPath(roundedRect: r, xRadius: 3, yRadius: 3).fill()
+        NSColor.systemGreen.withAlphaComponent(0.20).setFill()
+        NSRect(x: r.width * 42 / 60, y: 0, width: r.width * 15 / 60, height: r.height).fill()  // zona buena (−18 a −3 dB)
+        color.setFill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: max(2, r.width * frac), height: r.height), xRadius: 3, yRadius: 3).fill()
     }
+}
+
+/// Pone un `MedidorVista` ya creado dentro del panel de SwiftUI.
+struct Medidor: NSViewRepresentable {
+    let vista: MedidorVista
+    func makeNSView(context: Context) -> MedidorVista { vista.removeFromSuperview(); return vista }
+    func updateNSView(_ v: MedidorVista, context: Context) {}
 }
 
 struct VistaPrincipal: View {
     @ObservedObject var e: EstadoUI
     @ObservedObject var a: Ajustes
+    let medidorMic: MedidorVista
+    let medidorSis: MedidorVista
     let accion: (Accion) -> Void
 
     var body: some View {
         // Un solo bloque: todo el panel (incluida la transcripción y el pie) se desplaza junto, sin barra visible. Plegada la transcripción
         // cabe completo; al desplegarla crece hacia abajo, el panel llega al alto de la pantalla y baja solo hasta mostrar lo desplegado.
-        let altoMaximo = max(400, (NSScreen.screens.map { $0.visibleFrame.height }.min() ?? 800) - 24)
+        let altoMaximo = e.altoMaximoPanel
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
                 contenido
@@ -282,7 +293,7 @@ struct VistaPrincipal: View {
                     Text(String(format: "%+.0f dB", a.gananciaMicDB)).font(.caption).monospacedDigit()
                 }
                 Slider(value: $a.gananciaMicDB, in: 0...36, step: 1)
-                Medidor(db: e.nivelMic)
+                Medidor(vista: medidorMic).frame(height: 10)
                 HStack {
                     Text(e.calibrando ? "Habla normal… \(e.calibrandoRestante) s" : e.consejoVoz)
                         .font(.caption).foregroundColor(.secondary)
@@ -319,8 +330,8 @@ struct VistaPrincipal: View {
                 Text(String(format: "%+.0f dB", a.gananciaSisDB)).font(.caption).monospacedDigit()
             }
             Slider(value: $a.gananciaSisDB, in: -18...12, step: 1)
-            Medidor(db: e.nivelSis)
-            Text("Se graba aunque tengas audífonos, mute o el volumen bajo. El medidor se mueve mientras grabas.").font(.caption2).foregroundColor(.secondary)
+            Medidor(vista: medidorSis).frame(height: 10)
+            Text("Se graba aunque tengas audífonos, mute o el volumen bajo. El medidor se mueve con el panel abierto y al grabar.").font(.caption2).foregroundColor(.secondary)
         }
     }
 

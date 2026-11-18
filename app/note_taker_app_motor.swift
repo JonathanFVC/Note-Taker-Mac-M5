@@ -39,11 +39,13 @@ let presetsVideo = [
 /// Crea `registros/` una sola vez (los globales de Swift se inicializan al primer uso).
 private let registrosListos: Bool = { try? FileManager.default.createDirectory(atPath: carpetaRegistros, withIntermediateDirectories: true); return true }()
 
+/// Formato de hora del registro, creado una sola vez (crear un DateFormatter en cada línea es caro).
+private let formatoLog: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"; return f }()
+
 func logApp(_ s: String) {
     _ = registrosListos
     let ruta = carpetaRegistros + "/app.log"
-    let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"
-    let linea = "\(f.string(from: Date())) \(s)\n"
+    let linea = "\(formatoLog.string(from: Date())) \(s)\n"
     if let h = FileHandle(forWritingAtPath: ruta) { h.seekToEndOfFile(); h.write(Data(linea.utf8)); try? h.close() }
     else { try? linea.write(toFile: ruta, atomically: true, encoding: .utf8) }
 }
@@ -167,7 +169,25 @@ func rutaFfmpeg() -> String? {
     return nil
 }
 
-func mezclarYEntregar(crudo: URL, final: URL, dosPistas: Bool) -> String? {
+/// ¿El proceso sigue corriendo? Un proceso ya terminado pero sin recoger (zombi) cuenta como terminado.
+func procesoVivo(_ pid: Int32) -> Bool {
+    var info = proc_bsdinfo()
+    let n = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size))
+    return n > 0 && info.pbi_status != UInt32(SZOMB)
+}
+
+/// Espera a que termine un proceso hijo SIN bloquear ningún hilo (nada de `waitUntilExit`): consulta cada 0.3 s. Devuelve su código de salida,
+/// o nil si dejó de existir sin poder leerlo. Con `waitUntilExit` dentro de una tarea en segundo plano, la app se quedó esperando a ffmpeg
+/// 8 min y a Whisper 2 h 15 min después de que ya habían terminado (2026-11-18).
+func esperarFin(_ p: Process) async -> Int32? {
+    let pid = p.processIdentifier
+    var vueltas = 0
+    // 0.3 s al principio (ffmpeg y las pruebas cortas terminan enseguida) y 1 s después: una junta larga tarda minutos y no hay que despertar la app 3 veces por segundo.
+    while p.isRunning && procesoVivo(pid) { vueltas += 1; try? await Task.sleep(nanoseconds: vueltas < 20 ? 300_000_000 : 1_000_000_000) }
+    return p.isRunning ? nil : p.terminationStatus
+}
+
+func mezclarYEntregar(crudo: URL, final: URL, dosPistas: Bool) async -> String? {
     guard let ff = rutaFfmpeg() else { return "ffmpeg no está instalado" }
     var args = ["-y", "-loglevel", "error", "-i", crudo.path]
     if dosPistas {
@@ -181,11 +201,19 @@ func mezclarYEntregar(crudo: URL, final: URL, dosPistas: Bool) -> String? {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: ff)
     p.arguments = args
-    let pipe = Pipe(); p.standardError = pipe
-    do { try p.run() } catch { return "no se pudo ejecutar ffmpeg: \(error.localizedDescription)" }
-    p.waitUntilExit()
-    if p.terminationStatus != 0 {
-        let msg = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    // Los errores de ffmpeg van a un archivo (no a un Pipe): así no hay riesgo de que se llene y lo detenga.
+    let logFfmpeg = carpetaRegistros + "/mezcla.log"
+    FileManager.default.createFile(atPath: logFfmpeg, contents: nil)
+    let h = FileHandle(forWritingAtPath: logFfmpeg)
+    p.standardError = h
+    let inicio = Date()
+    do { try p.run() } catch { try? h?.close(); return "no se pudo ejecutar ffmpeg: \(error.localizedDescription)" }
+    logApp("mezcla: inicio (ffmpeg pid \(p.processIdentifier))")
+    let codigo = await esperarFin(p)
+    try? h?.close()
+    logApp("mezcla: fin (código \(codigo.map(String.init) ?? "sin código"), \(Int(Date().timeIntervalSince(inicio))) s)")
+    if codigo != 0 {
+        let msg = (try? String(contentsOfFile: logFfmpeg, encoding: .utf8)) ?? ""
         return "ffmpeg falló: \(msg.prefix(300))"
     }
     return nil
@@ -312,21 +340,28 @@ final class Motor: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioDat
     @MainActor
     func arrancarMic() async {
         guard let mic = dispositivoMic() else { logApp("mic: sin dispositivo"); return }
-        let s = AVCaptureSession()
-        do {
-            let entrada = try AVCaptureDeviceInput(device: mic)
-            guard s.canAddInput(entrada) else { logApp("mic: no se pudo agregar la entrada"); return }
-            s.addInput(entrada)
-            let salida = AVCaptureAudioDataOutput()
-            salida.setSampleBufferDelegate(self, queue: q)
-            guard s.canAddOutput(salida) else { logApp("mic: no se pudo agregar la salida"); return }
-            s.addOutput(salida)
-        } catch { logApp("mic: error \(error.localizedDescription)"); return }
+        let t0 = DispatchTime.now()
+        // La sesión se arma fuera del hilo principal (crear la entrada del micrófono habla con el servicio de audio del sistema y puede tardar).
+        let armada: AVCaptureSession? = await Task.detached(priority: .userInitiated) { [self] () -> AVCaptureSession? in
+            let s = AVCaptureSession()
+            do {
+                let entrada = try AVCaptureDeviceInput(device: mic)
+                guard s.canAddInput(entrada) else { logApp("mic: no se pudo agregar la entrada"); return nil }
+                s.addInput(entrada)
+                let salida = AVCaptureAudioDataOutput()
+                salida.setSampleBufferDelegate(self, queue: q)
+                guard s.canAddOutput(salida) else { logApp("mic: no se pudo agregar la salida"); return nil }
+                s.addOutput(salida)
+            } catch { logApp("mic: error \(error.localizedDescription)"); return nil }
+            return s
+        }.value
+        guard let s = armada else { return }
         micBase = .invalid; micMuestras = 0; micBloques = 0
-        sesionMic = s
+        sesionMic = s  // antes de arrancar: el primer bloque ya consulta su reloj
         await Task.detached { s.startRunning() }.value
         let reloj = s.synchronizationClock
-        logApp("mic: \(mic.localizedName) corriendo=\(s.isRunning) reloj_igual_al_del_sistema=\(reloj.map { CFEqual($0, CMClockGetHostTimeClock()) } ?? true)")
+        let ms = Int(Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1e6)
+        logApp("mic: \(mic.localizedName) corriendo=\(s.isRunning) reloj_igual_al_del_sistema=\(reloj.map { CFEqual($0, CMClockGetHostTimeClock()) } ?? true) · arranque \(ms) ms")
     }
 
     @MainActor
@@ -339,6 +374,8 @@ final class Motor: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioDat
     /// La hora del micrófono se calcula contando muestras desde su primer bloque (la conversión de reloj de AVCaptureSession se adelanta).
     func captureOutput(_ output: AVCaptureOutput, didOutput sb: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard sb.isValid else { return }
+        // Con el panel abierto (monitor) solo se mide el nivel: no hace falta calcular tiempos ni copiar el bloque.
+        if !escribiendo { audio(sb, mic: true); return }
         let n = CMSampleBufferGetNumSamples(sb)
         guard n > 0, let fd = CMSampleBufferGetFormatDescription(sb),
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fd)?.pointee, asbd.mSampleRate > 0 else { return }
@@ -361,14 +398,40 @@ final class Motor: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioDat
 
     @MainActor
     func iniciarMonitor() async -> String? {
-        // Monitor de niveles: SOLO el micrófono (AVCaptureSession), sin captura de pantalla. Mantiene vivo el medidor de voz y el
-        // «Aislamiento de voz» sin que macOS muestre su píldora morada de grabación de pantalla (esa solo sale al grabar de verdad).
+        // Monitor de niveles con el panel abierto: el micrófono (AVCaptureSession; mantiene vivo el medidor de voz y el «Aislamiento de voz»)
+        // y el audio de la Mac (ScreenCaptureKit SOLO de audio, sin salida de video). Así se ve el nivel
+        // de ambos antes de empezar una junta; macOS muestra su píldora morada mientras el panel está abierto (medido: es inevitable).
         guard modo == .inactivo else { return nil }
         modo = .monitor
         let usarMic = ajustes.microfonoActivo && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         q.sync { hayMicEnConfig = usarMic }
         if usarMic { await arrancarMic() }
+        await arrancarMonitorSistema()
         return nil
+    }
+
+    /// Captura solo el AUDIO de la Mac para el medidor: sin salida de video y con un cuadro de 2×2 px por segundo (casi sin costo).
+    /// Usa el mismo objetivo que la grabación (pantalla, ventana o área); si no es válido todavía, mide el audio de toda la Mac.
+    @MainActor
+    func arrancarMonitorSistema() async {
+        do {
+            let contenido = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            guard let principal = contenido.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? contenido.displays.first else { return }
+            let filtro = (try? resolverObjetivo(contenido))?.filtro ?? SCContentFilter(display: principal, excludingApplications: [], exceptingWindows: [])
+            let cfg = SCStreamConfiguration()
+            cfg.width = 2; cfg.height = 2
+            cfg.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+            cfg.capturesAudio = true
+            cfg.sampleRate = 48000
+            cfg.channelCount = 2
+            cfg.excludesCurrentProcessAudio = false
+            let s = SCStream(filter: filtro, configuration: cfg, delegate: self)
+            try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: q)
+            try await s.startCapture()
+            // Si mientras arrancaba se cerró el panel o empezó una grabación, este monitor ya no hace falta.
+            if modo != .monitor { try? await s.stopCapture(); return }
+            stream = s
+        } catch { logApp("monitor del audio de la Mac: no arrancó (\(error.localizedDescription))") }
     }
 
     @MainActor
@@ -417,10 +480,12 @@ final class Motor: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioDat
     }
 
     func audio(_ sb: CMSampleBuffer, mic: Bool) {
-        let crudo = picoDe(sb)
+        let crudo = picoDe(sb)  // una sola pasada por el bloque
         let g = mic ? gMic : gSis
-        if g != 1 { escalarAudio(sb, g) }
-        let p = (g == 1) ? crudo : picoDe(sb)
+        // El pico DESPUÉS de la ganancia (con tope en 1) sale de la cuenta, sin volver a recorrer el audio (antes: 3 pasadas); y la ganancia
+        // solo se aplica al bloque cuando se está escribiendo (en el monitor del panel nadie usa el audio, solo el nivel).
+        let p = (g == 1) ? crudo : min(1, crudo * g)
+        if escribiendo && g != 1 { escalarAudio(sb, g) }
         lock.lock()
         if mic {
             ventanaMic = max(ventanaMic, p); ventanaMicCrudo = max(ventanaMicCrudo, crudo); ultimoAudioMic = Date()
@@ -614,7 +679,7 @@ final class Motor: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioDat
             modo = .inactivo
             return ResultadoGrabacion(ruta: crudo.path, duracion: duracion, megas: 0, picoSis: 0, picoMic: 0, avisos: avisos)
         }
-        let fallo = await Task.detached { mezclarYEntregar(crudo: crudo, final: final, dosPistas: dosPistas) }.value
+        let fallo = await mezclarYEntregar(crudo: crudo, final: final, dosPistas: dosPistas)
         if let fallo = fallo {
             avisos.append("No se pudo mezclar (\(fallo)). Se conserva el archivo con pistas separadas.")
             try? FileManager.default.moveItem(at: crudo, to: final)

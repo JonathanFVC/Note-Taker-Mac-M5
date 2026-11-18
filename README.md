@@ -30,8 +30,8 @@ Note Taker junta en un solo paso lo que normalmente son tres herramientas: un gr
   - **Área**: pulsa «Elegir área…» y **arrastra un rectángulo** sobre la pantalla (como en `Cmd+Shift+5`). Se graba ese rectángulo y el audio de toda la Mac.
   - Si pulsas «Iniciar grabación» en modo Ventana o Área sin haber elegido, se abre el selector y **empieza a grabar al elegir**. El modo no se recuerda: la app siempre abre en **Pantalla**.
 - **Todo desde el icono de la barra de menú** (el panel solo hace falta para iniciar o cambiar ajustes):
-  - Sin grabar: icono de onda. **Grabando: cuadrado rojo con el tiempo; un clic lo detiene y lo guarda.**
-  - Guardando o transcribiendo: **rueda azul que gira**. Al terminar, aviso «Video transcrito» (en el panel si está abierto; si no, un aviso flotante bajo el icono).
+  - Sin grabar: icono de onda. **Grabando: cuadrado rojo que late, con el tiempo; un clic lo detiene y lo guarda.**
+  - Guardando o transcribiendo: **rueda de carga azul** (animada por Core Animation, sin costo de CPU para la app), en la barra y en el panel. Al terminar, aviso «Video transcrito» (en el panel si está abierto; si no, un aviso flotante bajo el icono).
   - Clic derecho: menú con «Iniciar grabación»/«Detener y guardar», «Mostrar panel» y «Salir».
 - Graba el **audio del sistema** (se graba igual con audífonos Bluetooth, en mute o con el volumen al 5 %, porque ScreenCaptureKit lo toma antes del dispositivo de salida) y el **micrófono**, en un solo `.mov` con **una pista de audio mezclada** (AAC, 48 kHz, estéreo).
 - **Micrófono integrado de la Mac por defecto**, aunque la entrada del sistema sea otra.
@@ -179,7 +179,7 @@ También puedes transcribir cualquier video o audio con el script suelto: `~/.no
 
 - **Contenido con DRM** (Netflix, Spotify, etc.) no se puede grabar.
 - **Mientras se graba, macOS muestra su indicador morado de captura de pantalla** en la barra de menú: es del sistema (privacidad) y ninguna app puede ocultarlo. Con la barra muy llena, macOS puede ocultar algún botón; si el tiempo no cabe junto al cuadrado rojo, la app deja solo el cuadrado.
-- **El medidor «Audio de la Mac» solo se mueve mientras grabas** (con el panel abierto solo se mide el micrófono).
+- **El medidor «Audio de la Mac» se mueve con el panel abierto y al grabar** (con el panel abierto se mide el micrófono y el audio de la Mac; macOS muestra su píldora morada mientras el panel esté abierto, es inevitable al medir el audio del sistema).
 - **Una ventana grabada capta solo el audio de su app**; una **pestaña** no se puede grabar sola (se graba la ventana del navegador). macOS solo permite grabar ventanas visibles: no las minimizadas ni las de otro Espacio.
 - **La app todavía no evita que la Mac se duerma** por inactividad mientras graba (el comando sí). Una llamada de Meet o Zoom ya la mantiene despierta.
 - **Sin el Aislamiento de voz activado**, el ruido de fondo y las voces lejanas llegan al micrófono y a Whisper, y baja la precisión de la transcripción.
@@ -200,7 +200,7 @@ app/note_taker_app_motor.swift            captura, escritor de archivo y mezcla
 app/note_taker_app_captura.swift          qué grabar: pantalla, ventana o área
 app/note_taker_app_selector_area.swift    selector de área (arrastrar)
 app/note_taker_app_selector_ventana.swift selector de ventana con el puntero
-app/note_taker_app_aviso.swift            rueda de carga, botón de stop y avisos
+app/note_taker_app_aviso.swift            indicadores animados (rueda de carga y cuadrado rojo, dibujados por Core Animation) y avisos
 app/note_taker_app_tema.swift             tema visual: colores de acento y logo opcional (`logo.png`)
 app/note_taker_app_vista.swift            ajustes y panel (SwiftUI)
 app/note_taker_app_principal.swift        barra de menú, atajo, URL, permisos y arranque de Whisper

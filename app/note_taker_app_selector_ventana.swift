@@ -158,12 +158,21 @@ final class SelectorVentana {
         return CGPoint(x: l.x, y: (NSScreen.screens.first?.frame.height ?? 0) - l.y)
     }
 
+    /// Solo se redibujan las capas (de pantalla completa) cuando la ventana resaltada cambia de verdad, no en cada movimiento del puntero.
     private func resaltar(_ v: VentanaBajoPuntero?) {
+        if v?.id == resaltada?.id && v?.marco == resaltada?.marco { return }
         resaltada = v
         for vista in vistas { vista.resaltada = v; vista.needsDisplay = true }
     }
 
-    private func mover() { resaltar(ventanaBajo(puntoQuartz())) }
+    /// Lista de ventanas guardada 0.2 s: el puntero genera decenas de eventos por segundo y cada consulta al sistema cuesta varios ms.
+    private var listaCache: (fecha: Date, ventanas: [VentanaBajoPuntero])?
+    private func ventanaBajoPunto(_ punto: CGPoint) -> VentanaBajoPuntero? {
+        if listaCache == nil || Date().timeIntervalSince(listaCache!.fecha) > 0.2 { listaCache = (Date(), ventanasVisibles()) }
+        return listaCache!.ventanas.first(where: { $0.marco.contains(punto) })
+    }
+
+    private func mover() { resaltar(ventanaBajoPunto(puntoQuartz())) }
 
     private func clic() {
         guard let v = resaltada else { return }  // clic sobre el escritorio: no hay ventana que elegir
@@ -178,6 +187,8 @@ final class SelectorVentana {
         for w in ventanas { w.orderOut(nil) }
         ventanas = []
         vistas = []
+        listaCache = nil
+        resaltada = nil
     }
 
     /// Para pruebas: pone el puntero en un punto de Quartz (puntos, arriba a la izquierda) y, si `clic`, elige la ventana de abajo.

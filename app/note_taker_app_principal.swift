@@ -47,10 +47,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let selector = SelectorArea()
     let selectorVentana = SelectorVentana()
     var tokenMonitor = 0
-    var ruedaTimer: Timer?
-    var anguloRueda: CGFloat = 90
+    /// Medidores de voz y de audio de la Mac: vistas propias que se dibujan solas (no pasan por SwiftUI, que recalculaba todo el panel en cada lectura).
+    let medidorMic = MedidorVista()
+    let medidorSis = MedidorVista()
+    /// Intervalo del reloj que mueve los medidores y el contador: nil = apagado (nada que mover).
+    var relojIntervalo: TimeInterval?
+    /// Indicador animado sobre el icono de la barra: rueda al guardar o transcribir, cuadrado rojo que late al grabar (Core Animation, sin CPU).
+    var indicador: IndicadorCA?
+    /// Mientras se graba, guarda o transcribe, macOS no debe poner la app en reposo (App Nap).
+    var actividadSistema: NSObjectProtocol?
+    lazy var imagenReposo: NSImage? = {
+        let i = NSImage(systemSymbolName: "waveform.circle", accessibilityDescription: "Note Taker")
+        i?.isTemplate = true
+        return i
+    }()
+    /// Imagen vacía del tamaño del icono: conserva el ancho del botón mientras el indicador animado ocupa su lugar.
+    lazy var imagenHueco: NSImage = NSImage(size: NSSize(width: 18, height: 18))
     /// Si macOS ocultó el botón al ponerle el tiempo (no cabía en la barra), esta grabación sigue solo con el icono.
     var sinTiempoEnBarra = false
+    /// Segundos de la grabación en curso para la barra (el panel usa `estado.segundos`, que solo se actualiza con el panel abierto).
+    var segundosBarra = 0
     var botonOcultoSeguidos = 0
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -66,8 +82,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         registrarAtajo()
         refrescarPermisos(pedir: true)
         configurarLoginInicial()
-        reloj = Timer.scheduledTimer(withTimeInterval: 0.07, repeats: true) { [weak self] _ in
+        programarReloj()  // en reposo con el panel cerrado no corre ningún reloj
+    }
+
+    /// Un solo reloj, y solo cuando hace falta: rápido (0.07 s) con el panel abierto o midiendo la voz; lento (1 s) para el contador mientras
+    /// se graba con el panel cerrado; apagado el resto del tiempo (antes corría 14 veces por segundo siempre y la app nunca descansaba).
+    func programarReloj() {
+        let intervalo: TimeInterval? = (popoverAbierto || calFin != nil) ? 0.07 : (estado.fase == .grabando ? 1.0 : nil)
+        guard intervalo != relojIntervalo else { return }
+        reloj?.invalidate(); reloj = nil
+        relojIntervalo = intervalo
+        guard let i = intervalo else { return }
+        let t = Timer.scheduledTimer(withTimeInterval: i, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tic() }
+        }
+        t.tolerance = i * 0.15
+        reloj = t
+    }
+
+    /// Mientras hay trabajo (grabar, guardar, transcribir) se avisa a macOS para que no limite la app; al terminar se suelta.
+    func gestionarActividad(_ activa: Bool) {
+        if activa, actividadSistema == nil {
+            actividadSistema = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep], reason: "Note Taker: grabando, guardando o transcribiendo")
+        } else if !activa, let a = actividadSistema {
+            ProcessInfo.processInfo.endActivity(a)
+            actividadSistema = nil
         }
     }
 
@@ -84,35 +123,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
-    func icono(grabando: Bool) -> NSImage? {
-        if grabando { return imagenBotonStop() }  // botón de stop: cuadrado rojo
-        let img = NSImage(systemSymbolName: "waveform.circle", accessibilityDescription: "Note Taker")
-        img?.isTemplate = true
-        return img
-    }
+    func icono(grabando: Bool) -> NSImage? { grabando ? imagenHueco : imagenReposo }  // al grabar, el cuadrado rojo lo pone el indicador animado
 
     func actualizarItem() {
         guard let b = item.button else { return }
         let g = estado.fase == .grabando
         let ocupado = estado.fase == .cerrando || transcribiendo
-        b.toolTip = g ? "Grabando \(mmss(estado.segundos)) · clic para detener y guardar" : (ocupado ? "Guardando o transcribiendo…" : "Note Taker")
+        let tip = g ? "Grabando \(mmss(segundosBarra)) · clic para detener y guardar" : (ocupado ? "Guardando o transcribiendo…" : "Note Taker")
+        if b.toolTip != tip { b.toolTip = tip }
         if g || !ocupado {
-            // Grabando: botón de stop rojo (un clic detiene y guarda). Inactivo: la onda de siempre. Solo el icono, sin texto: con el
-            // indicador de grabación de macOS y el notch no cabe más y macOS oculta el botón; el tiempo va en el texto emergente.
-            ruedaTimer?.invalidate(); ruedaTimer = nil
-            b.image = icono(grabando: g)
-            if g && !sinTiempoEnBarra { b.attributedTitle = tiempoEnBarra(estado.segundos); vigilarBoton() }
-            else { b.attributedTitle = NSAttributedString(string: "") }
+            // Grabando: cuadrado rojo que late (un clic detiene y guarda) y el contador. Inactivo: la onda de siempre. Con el indicador de grabación
+            // de macOS y el notch no cabe mucho más: si macOS oculta el botón se queda solo el cuadrado (el tiempo va en el texto emergente).
+            let img = icono(grabando: g)
+            if b.image !== img { b.image = img }  // solo si cambió: reasignarla cada segundo hacía redibujar la barra
+            if g { ponerIndicador(.grabando) } else { quitarIndicador() }
+            if g && !sinTiempoEnBarra { b.attributedTitle = tiempoEnBarra(segundosBarra); vigilarBoton() }
+            else if b.attributedTitle.length > 0 { b.attributedTitle = NSAttributedString(string: "") }
         } else {
-            // Guardando o transcribiendo (y sin grabar): el icono pasa a una rueda de carga azul que gira.
-            b.title = ""
-            if ruedaTimer == nil {
-                b.image = imagenRuedaCarga(angulo: anguloRueda)
-                ruedaTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.girarRueda() }
-                }
-            }
+            // Guardando o transcribiendo (y sin grabar): rueda de carga con el color del tema, animada por Core Animation.
+            if b.attributedTitle.length > 0 { b.attributedTitle = NSAttributedString(string: "") }
+            if b.image !== imagenHueco { b.image = imagenHueco }
+            ponerIndicador(.rueda)
         }
+        colocarIndicador()
+        gestionarActividad(g || ocupado)
+        programarReloj()
+    }
+
+    func ponerIndicador(_ tipo: IndicadorCA.Tipo) {
+        if indicador?.tipo == tipo { return }
+        quitarIndicador()
+        guard let b = item.button else { return }
+        let i = IndicadorCA(tipo: tipo, lado: 18)
+        b.addSubview(i)
+        indicador = i
+    }
+
+    func quitarIndicador() {
+        indicador?.removeFromSuperview()
+        indicador = nil
+    }
+
+    /// El indicador va justo donde macOS dibuja la imagen del botón (a la izquierda; el contador queda a su derecha), centrado en vertical.
+    func colocarIndicador() {
+        guard let i = indicador, let b = item.button else { return }
+        let r = (b.cell as? NSButtonCell)?.imageRect(forBounds: b.bounds) ?? NSRect(x: 4, y: 2, width: 18, height: 18)
+        let origen = NSPoint(x: (r.midX - i.lado / 2).rounded(), y: ((b.bounds.height - i.lado) / 2).rounded())
+        if i.frame.origin != origen { i.setFrameOrigin(origen) }
     }
 
     /// Tiempo compacto (m:ss) con dígitos de ancho fijo, para que el botón no cambie de ancho cada segundo.
@@ -133,11 +190,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             item.button?.attributedTitle = NSAttributedString(string: "")
             logApp("barra: macOS ocultó el botón con el tiempo (no cabe en la barra); queda solo el icono")
         }
-    }
-
-    func girarRueda() {
-        anguloRueda -= 30
-        item.button?.image = imagenRuedaCarga(angulo: anguloRueda)
     }
 
     @objc func clicItem(_ sender: Any?) {
@@ -169,9 +221,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func configurarPopover() {
         popover.behavior = .transient
         popover.delegate = self
-        let host = NSHostingController(rootView: VistaPrincipal(e: estado, a: ajustes, accion: { [weak self] a in self?.ejecutar(a) }))
+        let host = NSHostingController(rootView: VistaPrincipal(e: estado, a: ajustes, medidorMic: medidorMic, medidorSis: medidorSis,
+                                                                accion: { [weak self] a in self?.ejecutar(a) }))
         host.sizingOptions = [.preferredContentSize]
         popover.contentViewController = host
+        // Calienta el panel y la lista de micrófonos al arrancar: la primera vez cuestan ≈0.4 s y no deben caer en el primer clic del usuario.
+        host.view.frame = NSRect(x: 0, y: 0, width: 340, height: 640)
+        host.view.layoutSubtreeIfNeeded()
+        Task.detached(priority: .utility) { _ = microfonosDisponibles() }
     }
 
     /// Último video grabado: el .mov más reciente de ~/Movies (también cuenta lo grabado con el comando o antes de reiniciar la app).
@@ -179,13 +236,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let dir = URL(fileURLWithPath: carpetaVideos)
         let claves: [URLResourceKey] = [.contentModificationDateKey]
         let archivos = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: claves)) ?? []
-        let grabaciones = archivos.filter { $0.lastPathComponent.hasPrefix("nota_") && $0.pathExtension == "mov" }
-        let ultimo = grabaciones.max { a, b in
-            let fa = (try? a.resourceValues(forKeys: Set(claves)).contentModificationDate) ?? .distantPast
-            let fb = (try? b.resourceValues(forKeys: Set(claves)).contentModificationDate) ?? .distantPast
-            return fa < fb
+        // Una sola pasada: la fecha de cada archivo se lee una vez (antes se leía en cada comparación).
+        var ultimo: (url: URL, fecha: Date)?
+        for a in archivos where a.lastPathComponent.hasPrefix("nota_") && a.pathExtension == "mov" {
+            let f = (try? a.resourceValues(forKeys: Set(claves)).contentModificationDate) ?? .distantPast
+            if ultimo == nil || f > ultimo!.fecha { ultimo = (a, f) }
         }
-        estado.ultimoArchivo = ultimo?.path
+        let ruta = ultimo?.url.path
+        if estado.ultimoArchivo != ruta { estado.ultimoArchivo = ruta }
         actualizarUltimoTranscrito()
     }
 
@@ -209,13 +267,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     /// ¿El último video ya tiene su transcripción en la carpeta de transcripciones?
     func actualizarUltimoTranscrito() {
-        guard let r = estado.ultimoArchivo, !r.isEmpty else { estado.ultimoTranscrito = nil; return }
+        guard let r = estado.ultimoArchivo, !r.isEmpty else { if estado.ultimoTranscrito != nil { estado.ultimoTranscrito = nil }; return }
         let base = URL(fileURLWithPath: r).deletingPathExtension().lastPathComponent
-        estado.ultimoTranscrito = FileManager.default.fileExists(atPath: carpetaNotas + "/" + base + ".txt")
+        let hecho = FileManager.default.fileExists(atPath: carpetaNotas + "/" + base + ".txt")
+        if estado.ultimoTranscrito != hecho { estado.ultimoTranscrito = hecho }
     }
 
     func mostrarPopover() {
         guard let b = item.button else { return }
+        let t0 = DispatchTime.now()
+        // Alto máximo del panel según las pantallas (antes se calculaba dentro de la vista en cada redibujado).
+        estado.altoMaximoPanel = max(400, (NSScreen.screens.map { $0.visibleFrame.height }.min() ?? 800) - 24)
         buscarUltimoVideo()
         refrescarPermisos(pedir: false)
         refrescarMicrofonos()
@@ -223,10 +285,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
         NSApp.activate(ignoringOtherApps: true)
         popover.contentViewController?.view.window?.makeKey()  // el panel toma el foco: sus controles se ven activos (con el color del tema)
+        let ms = Int(Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1e6)
+        if ms >= 50 { logApp("panel: abrir tardó \(ms) ms en el hilo principal") }
     }
 
     func popoverWillShow(_ notification: Notification) {
         popoverAbierto = true
+        medidorMic.nivel = -90; medidorSis.nivel = -90; histMic.removeAll()  // el medidor arranca limpio, sin el valor de la vez anterior
+        if estado.segundos != segundosBarra { estado.segundos = segundosBarra }  // el panel muestra el tiempo desde que se abre
+        programarReloj()
         Task {
             if CGPreflightScreenCaptureAccess() {
                 if let err = await motor.iniciarMonitor() { estado.mensaje = err } else if estado.fase == .inactivo { estado.mensaje = nil }
@@ -236,6 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         popoverAbierto = false
+        programarReloj()
         Task {
             // Si se abrió el selector de modos de macOS, el micrófono debe seguir activo unos segundos.
             let espera = mantenerMonitorHasta.timeIntervalSinceNow
@@ -350,7 +418,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         if let err = await motor.iniciarGrabacion() { estado.mensaje = err; return }
         estado.fase = .grabando
-        estado.segundos = 0
+        segundosBarra = 0; estado.segundos = 0
         sinTiempoEnBarra = false; botonOcultoSeguidos = 0  // cada grabación vuelve a intentar mostrar el tiempo
         actualizarItem()
         popover.performClose(nil) // ya grabando: el panel se cierra solo (si no, se queda fijo hasta volver a pulsar)
@@ -412,29 +480,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     // MARK: Medidores y calibración
 
+    /// Lo que mueve el reloj (ver `programarReloj`). Los medidores se dibujan directo; al estado de SwiftUI solo se escribe lo que CAMBIÓ,
+    /// porque cada escritura recalcula el panel completo (con el panel abierto eso consumía ≈100 % de un núcleo).
     func tic() {
         if motor.modo == .inactivo && !popoverAbierto { return }
-        let n = motor.leerNiveles()
-        let decae = 5.0
-        let micDB = dbDe(n.mic)
-        estado.nivelSis = max(dbDe(n.sis), estado.nivelSis - decae)
-        estado.nivelMic = max(micDB, estado.nivelMic - decae)
-        estado.micVivo = n.micVivo
-        estado.modoMic = nombreModoMic(AVCaptureDevice.activeMicrophoneMode)
-        estado.aislamientoConocido = n.micVivo
-        estado.aislamientoActivo = AVCaptureDevice.activeMicrophoneMode == .voiceIsolation
-        histMic.append(micDB)
-        if histMic.count > 30 { histMic.removeFirst() }
-        estado.consejoVoz = consejo(histMic.max() ?? -90, vivo: n.micVivo)
+        if popoverAbierto || calFin != nil {
+            let n = motor.leerNiveles()
+            let decae = 2.0  // dB por lectura: la barra sube al instante y baja suave (antes 5 dB: parpadeaba entre palabras)
+            let micDB = dbDe(n.mic)
+            medidorSis.nivel = max(dbDe(n.sis), medidorSis.nivel - decae)
+            medidorMic.nivel = max(micDB, medidorMic.nivel - decae)
+            if estado.micVivo != n.micVivo { estado.micVivo = n.micVivo }
+            let modo = AVCaptureDevice.activeMicrophoneMode
+            let nombreModo = nombreModoMic(modo)
+            if estado.modoMic != nombreModo { estado.modoMic = nombreModo }
+            if estado.aislamientoConocido != n.micVivo { estado.aislamientoConocido = n.micVivo }
+            let aislado = modo == .voiceIsolation
+            if estado.aislamientoActivo != aislado { estado.aislamientoActivo = aislado }
+            histMic.append(micDB)
+            if histMic.count > 30 { histMic.removeFirst() }
+            let c = consejo(histMic.max() ?? -90, vivo: n.micVivo)
+            if estado.consejoVoz != c { estado.consejoVoz = c }
+            if let fin = calFin {
+                calPico = max(calPico, n.micCrudo)
+                let r = max(0, Int(ceil(fin.timeIntervalSinceNow)))
+                if r != estado.calibrandoRestante { estado.calibrandoRestante = r }
+                if Date() >= fin { terminarCalibracion() }
+            }
+        }
         if motor.modo == .grabando {
             let s = Int(Date().timeIntervalSince(motor.inicioGrabacion))
-            if s != estado.segundos { estado.segundos = s; actualizarItem() }
-        }
-        if let fin = calFin {
-            calPico = max(calPico, n.micCrudo)
-            let r = max(0, Int(ceil(fin.timeIntervalSinceNow)))
-            if r != estado.calibrandoRestante { estado.calibrandoRestante = r }
-            if Date() >= fin { terminarCalibracion() }
+            // El contador de la barra no pasa por SwiftUI: con el panel cerrado, escribir `estado.segundos` cada segundo hacía recalcular el panel
+            // (≈2 % de CPU en toda la grabación). Solo se publica si el panel está abierto.
+            if s != segundosBarra { segundosBarra = s; if popoverAbierto { estado.segundos = s }; actualizarItem() }
         }
     }
 
@@ -458,10 +536,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         estado.calibrando = true
         estado.calibrandoRestante = 5
         estado.mensaje = nil
+        programarReloj()
     }
 
     func terminarCalibracion() {
         calFin = nil
+        programarReloj()
         estado.calibrando = false
         let crudoDB = dbDe(calPico)
         if crudoDB < -58 {

@@ -2,18 +2,74 @@
 import SwiftUI
 import AppKit
 
-/// Rueda de carga azul para el panel: gira sola mientras está en pantalla (TimelineView: el `swiftc` de consola no tiene la macro @State).
+/// Indicador animado del icono de la barra y del panel, dibujado y animado por Core Animation: el sistema mueve las capas por su cuenta y la app
+/// no gasta CPU mientras gira o parpadea (medido: 0.0 % de la app). Colores: rueda = `Tema.carga` (azul, o el naranja de marca); grabando = rojo.
+final class IndicadorCA: NSView {
+    enum Tipo { case rueda, grabando }
+    let tipo: Tipo
+    let lado: CGFloat
+    private let pista = CAShapeLayer()
+    private let figura = CAShapeLayer()
+
+    init(tipo: Tipo, lado: CGFloat) {
+        self.tipo = tipo
+        self.lado = lado
+        super.init(frame: NSRect(x: 0, y: 0, width: lado, height: lado))
+        wantsLayer = true
+        let caja = CGRect(x: 0, y: 0, width: lado, height: lado)
+        for l in [pista, figura] { l.bounds = caja; l.position = CGPoint(x: lado / 2, y: lado / 2); layer?.addSublayer(l) }
+        switch tipo {
+        case .rueda:
+            let ancho = max(2, lado / 7)
+            let anillo = CGPath(ellipseIn: caja.insetBy(dx: ancho, dy: ancho), transform: nil)
+            for l in [pista, figura] { l.path = anillo; l.fillColor = nil; l.lineWidth = ancho; l.lineCap = .round }
+            pista.strokeColor = Tema.carga.withAlphaComponent(0.25).cgColor
+            figura.strokeColor = Tema.carga.cgColor
+            figura.strokeEnd = 0.72
+        case .grabando:
+            figura.path = CGPath(roundedRect: caja.insetBy(dx: lado * 0.14, dy: lado * 0.14), cornerWidth: 3, cornerHeight: 3, transform: nil)
+            figura.fillColor = NSColor.systemRed.cgColor
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("no se usa") }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: lado, height: lado) }
+
+    /// Las animaciones viven mientras la vista está en una ventana (y se reinician si vuelve a ella).
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        figura.removeAllAnimations()
+        guard window != nil else { return }
+        switch tipo {
+        case .rueda:  // vuelta completa cada 0.9 s, en el sentido de las manecillas del reloj
+            let a = CABasicAnimation(keyPath: "transform.rotation.z")
+            a.fromValue = 0; a.toValue = -2 * Double.pi
+            a.duration = 0.9; a.repeatCount = .infinity
+            a.timingFunction = CAMediaTimingFunction(name: .linear)
+            figura.add(a, forKey: "giro")
+        case .grabando:  // late suave: 1.0 ⇄ 0.45 de opacidad
+            let a = CABasicAnimation(keyPath: "opacity")
+            a.fromValue = 1.0; a.toValue = 0.45
+            a.duration = 0.9; a.autoreverses = true; a.repeatCount = .infinity
+            a.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            figura.add(a, forKey: "late")
+        }
+    }
+}
+
+/// Puente de SwiftUI para el indicador de Core Animation.
+struct RuedaCargaCA: NSViewRepresentable {
+    var lado: CGFloat
+    func makeNSView(context: Context) -> IndicadorCA { IndicadorCA(tipo: .rueda, lado: lado) }
+    func updateNSView(_ v: IndicadorCA, context: Context) {}
+}
+
+/// Rueda de carga del panel («Transcribiendo video…»): la misma de la barra, con el color del tema y de tamaño FIJO (una vista de AppKit se
+/// estira por omisión y empujaba el texto de la fila).
 struct RuedaCarga: View {
     var tamano: CGFloat = 14
     var body: some View {
-        TimelineView(.animation) { contexto in
-            let vuelta = contexto.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.9) / 0.9
-            Circle()
-                .trim(from: 0, to: 0.72)
-                .stroke(Color(nsColor: Tema.carga), style: StrokeStyle(lineWidth: max(2, tamano / 6), lineCap: .round))
-                .frame(width: tamano, height: tamano)
-                .rotationEffect(.degrees(vuelta * 360))
-        }
+        RuedaCargaCA(lado: tamano + 2).frame(width: tamano + 2, height: tamano + 2).fixedSize()
     }
 }
 
@@ -47,42 +103,6 @@ struct AvisoFlotanteVista: View {
         .padding(6)
         .fixedSize()  // el texto nunca se corta: la ventana toma su tamaño ideal
     }
-}
-
-/// Imagen de la rueda de carga azul para el icono de la barra de menú (un cuadro de la animación).
-func imagenRuedaCarga(angulo: CGFloat) -> NSImage {
-    let lado: CGFloat = 18
-    let img = NSImage(size: NSSize(width: lado, height: lado), flipped: false) { rect in
-        let centro = NSPoint(x: rect.midX, y: rect.midY)
-        let radio = rect.width / 2 - 3
-        let pista = NSBezierPath()
-        pista.appendArc(withCenter: centro, radius: radio, startAngle: 0, endAngle: 360)
-        pista.lineWidth = 2
-        Tema.carga.withAlphaComponent(0.25).setStroke()
-        pista.stroke()
-        let arco = NSBezierPath()
-        arco.appendArc(withCenter: centro, radius: radio, startAngle: angulo, endAngle: angulo + 260)
-        arco.lineWidth = 2.2
-        arco.lineCapStyle = .round
-        Tema.carga.setStroke()
-        arco.stroke()
-        return true
-    }
-    img.isTemplate = false
-    return img
-}
-
-/// Botón de stop para el icono de la barra mientras se graba: cuadrado rojo de esquinas redondeadas (el símbolo clásico de «detener»).
-func imagenBotonStop() -> NSImage {
-    let lado: CGFloat = 18
-    let img = NSImage(size: NSSize(width: lado, height: lado), flipped: false) { rect in
-        let cuadrado = rect.insetBy(dx: 2.5, dy: 2.5)
-        NSColor.systemRed.setFill()
-        NSBezierPath(roundedRect: cuadrado, xRadius: 3, yRadius: 3).fill()
-        return true
-    }
-    img.isTemplate = false
-    return img
 }
 
 /// Aviso chico que aparece bajo el icono de la barra de menú y se quita solo (para cuando el panel está cerrado).

@@ -46,31 +46,36 @@ func rutaScriptTranscribir() -> String? {
 }
 
 /// Corre Whisper (modelo turbo, el único de Note Taker) sobre el video (con prioridad baja) y devuelve la ruta del .txt, o el motivo del fallo.
+/// No bloquea ningún hilo: lanza el proceso y espera su fin consultándolo (`esperarFin`, ver note_taker_app_motor.swift).
 func transcribirVideo(_ video: URL, idioma: String) async -> (ok: Bool, texto: String) {
     guard let py = rutaPythonWhisper() else { return (false, "Whisper no está instalado: ejecuta instalar_whisper.sh (ver README).") }
     guard let script = rutaScriptTranscribir() else { return (false, "No se encontró note_taker_transcribir.py.") }
-    return await Task.detached(priority: .utility) { () -> (Bool, String) in
-        try? FileManager.default.createDirectory(atPath: carpetaRegistros, withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(atPath: carpetaNotas, withIntermediateDirectories: true)
-        let log = carpetaRegistros + "/transcripcion.log"
-        FileManager.default.createFile(atPath: log, contents: nil)
-        let h = FileHandle(forWritingAtPath: log)
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/nice")
-        p.arguments = ["-n", "10", py, script, video.path, "--out", carpetaNotas, "--lang", idioma, "--ultima"]
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-        env["PYTHONUNBUFFERED"] = "1"
-        p.environment = env
-        p.standardOutput = h
-        p.standardError = h
-        do { try p.run() } catch { return (false, "No se pudo lanzar Whisper: \(error.localizedDescription)") }
-        p.waitUntilExit()
-        try? h?.close()
-        let base = video.deletingPathExtension().lastPathComponent
-        let txt = carpetaNotas + "/" + base + ".txt"
-        if p.terminationStatus == 0 && FileManager.default.fileExists(atPath: txt) { return (true, txt) }
-        let cola = ((try? String(contentsOfFile: log, encoding: .utf8)) ?? "").split(separator: "\n").suffix(3).joined(separator: " · ")
-        return (false, "Whisper terminó con error (\(p.terminationStatus)). \(cola)")
-    }.value
+    try? FileManager.default.createDirectory(atPath: carpetaRegistros, withIntermediateDirectories: true)
+    try? FileManager.default.createDirectory(atPath: carpetaNotas, withIntermediateDirectories: true)
+    let log = carpetaRegistros + "/transcripcion.log"
+    FileManager.default.createFile(atPath: log, contents: nil)
+    let h = FileHandle(forWritingAtPath: log)
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/nice")
+    p.arguments = ["-n", "10", py, script, video.path, "--out", carpetaNotas, "--lang", idioma, "--ultima"]
+    var env = ProcessInfo.processInfo.environment
+    env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    env["PYTHONUNBUFFERED"] = "1"
+    p.environment = env
+    p.standardOutput = h
+    p.standardError = h
+    let inicio = Date()
+    do { try p.run() } catch { try? h?.close(); return (false, "No se pudo lanzar Whisper: \(error.localizedDescription)") }
+    logApp("transcripción: inicio (\(video.lastPathComponent), pid \(p.processIdentifier))")
+    let codigo = await esperarFin(p)
+    try? h?.close()
+    logApp("transcripción: fin (código \(codigo.map(String.init) ?? "sin código"), \(Int(Date().timeIntervalSince(inicio))) s)")
+    let base = video.deletingPathExtension().lastPathComponent
+    let txt = carpetaNotas + "/" + base + ".txt"
+    // Sin código de salida (el proceso desapareció): vale el .txt solo si lo escribió esta corrida.
+    let fechaTxt = (try? FileManager.default.attributesOfItem(atPath: txt)[.modificationDate]) as? Date
+    let hayTxt = codigo == nil ? (fechaTxt.map { $0 >= inicio } ?? false) : FileManager.default.fileExists(atPath: txt)
+    if (codigo == 0 || codigo == nil) && hayTxt { return (true, txt) }
+    let cola = ((try? String(contentsOfFile: log, encoding: .utf8)) ?? "").split(separator: "\n").suffix(3).joined(separator: " · ")
+    return (false, "Whisper terminó con error (\(codigo.map(String.init) ?? "sin código")). \(cola)")
 }
