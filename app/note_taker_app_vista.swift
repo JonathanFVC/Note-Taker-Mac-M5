@@ -145,6 +145,7 @@ struct VistaPrincipal: View {
             }
             .scrollBounceBehavior(.basedOnSize)
             .frame(width: 340, height: min(max(e.altoPanel, 200), altoMaximo))
+            .tint(Tema.acento)  // interruptores, deslizadores y casillas con el color del tema (nil = el de macOS)
             .onPreferenceChange(AltoPanelKey.self) { h in
                 if h > 0, abs(h - e.altoPanel) > 0.5 { DispatchQueue.main.async { e.altoPanel = h } }
             }
@@ -160,9 +161,14 @@ struct VistaPrincipal: View {
     var contenido: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Circle().fill(e.fase == .grabando ? Color.red : Color.gray).frame(width: 10, height: 10)
+                // Con logo (tema de marca): el logo a la izquierda y el estado a la derecha, en la misma fila.
+                if let logo = Tema.logo {
+                    Image(nsImage: logo).resizable().interpolation(.high).scaledToFit().frame(height: 24)
+                    Spacer()
+                }
+                Circle().fill(e.fase == .grabando ? Color.red : (e.fase == .inactivo ? (Tema.listo ?? Color.gray) : Color.gray)).frame(width: 10, height: 10)
                 Text(titulo).font(.headline)
-                Spacer()
+                if Tema.logo == nil { Spacer() }
                 if e.fase == .grabando { Text(mmss(e.segundos)).monospacedDigit().font(.headline) }
             }
             Button(action: { accion(.alternarGrabacion) }) {
@@ -170,7 +176,7 @@ struct VistaPrincipal: View {
                     .frame(maxWidth: .infinity)
             }
             .controlSize(.large).buttonStyle(.borderedProminent)
-            .tint(e.fase == .grabando ? .red : .accentColor)
+            .tint(e.fase == .grabando ? .red : (Tema.acento ?? .accentColor))
             .disabled(e.fase == .cerrando)
 
             if !e.permisoPantalla {
@@ -363,7 +369,7 @@ struct VistaPrincipal: View {
         if transcribiendoAhora {
             HStack(spacing: 6) {
                 RuedaCarga()
-                Text("Transcribiendo video…").font(.caption).bold().foregroundColor(.blue)
+                Text("Transcribiendo video…").font(.caption).bold().foregroundColor(Color(nsColor: Tema.carga))
             }
         } else if case .error(let m) = e.transcripcion {
             Text(m).font(.caption).foregroundColor(.red).lineLimit(2).fixedSize(horizontal: false, vertical: true)
@@ -390,7 +396,7 @@ struct VistaPrincipal: View {
         if transcribiendoAhora {
             HStack(spacing: 6) {
                 RuedaCarga()
-                Text("Transcribiendo video…").font(.caption).bold().foregroundColor(.blue)
+                Text("Transcribiendo video…").font(.caption).bold().foregroundColor(Color(nsColor: Tema.carga))
                 if case .enCurso(let n) = e.transcripcion {
                     Text(n).font(.caption2).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)
                 }

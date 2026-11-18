@@ -85,6 +85,8 @@ La primera vez, macOS pedirá permisos para «NoteTaker»:
 1. **Grabación de pantalla y audio del sistema** (Ajustes del Sistema › Privacidad y seguridad). Actívalo y pulsa **«Reiniciar app»** en el panel.
 2. **Micrófono.**
 
+Al instalar la app (`app/note_taker_app_compilar.sh`) se deja en el **Escritorio un alias de Finder, «Notas transcritas Note Taker»**, que abre la carpeta de transcripciones. Si ya existe, no se vuelve a crear; para no crearlo, instala con `NOTE_TAKER_SIN_ALIAS=1 bash app/note_taker_app_compilar.sh`; si no se pudiera crear, la instalación sigue y avisa.
+
 Si ya tienes Whisper en otro entorno de Python y solo quieres el comando, la variable `NOTE_TAKER_PYTHON` (ruta del `python` de ese entorno) sirve para la terminal; la app, al abrirse desde Finder, no hereda variables de la terminal y usa `~/.note-taker/whisper/entorno`.
 
 **Último paso, necesario para la mayor precisión: activa el «Aislamiento de voz»** (se hace una sola vez; los pasos están justo abajo).
@@ -199,6 +201,7 @@ app/note_taker_app_captura.swift          qué grabar: pantalla, ventana o área
 app/note_taker_app_selector_area.swift    selector de área (arrastrar)
 app/note_taker_app_selector_ventana.swift selector de ventana con el puntero
 app/note_taker_app_aviso.swift            rueda de carga, botón de stop y avisos
+app/note_taker_app_tema.swift             tema visual: colores de acento y logo opcional (`logo.png`)
 app/note_taker_app_vista.swift            ajustes y panel (SwiftUI)
 app/note_taker_app_principal.swift        barra de menú, atajo, URL, permisos y arranque de Whisper
 app/note_taker_app_transcriptor.swift     lanza Whisper y reporta el estado

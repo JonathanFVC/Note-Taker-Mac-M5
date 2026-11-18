@@ -222,6 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         refrescarObjetivos()
         popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
         NSApp.activate(ignoringOtherApps: true)
+        popover.contentViewController?.view.window?.makeKey()  // el panel toma el foco: sus controles se ven activos (con el color del tema)
     }
 
     func popoverWillShow(_ notification: Notification) {

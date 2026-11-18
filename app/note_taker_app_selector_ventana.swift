@@ -92,9 +92,9 @@ final class VistaSelectorVentana: NSView {
         }
         capa.fill()
         if let h = hueco, let v = resaltada {
-            NSColor.systemBlue.withAlphaComponent(0.18).setFill()
+            Tema.seleccion.withAlphaComponent(0.18).setFill()
             NSBezierPath(rect: h).fill()
-            NSColor.systemBlue.setStroke()
+            Tema.seleccion.setStroke()
             let borde = NSBezierPath(rect: h.insetBy(dx: 1.5, dy: 1.5))
             borde.lineWidth = 3
             borde.stroke()

@@ -10,7 +10,7 @@ struct RuedaCarga: View {
             let vuelta = contexto.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.9) / 0.9
             Circle()
                 .trim(from: 0, to: 0.72)
-                .stroke(Color.blue, style: StrokeStyle(lineWidth: max(2, tamano / 6), lineCap: .round))
+                .stroke(Color(nsColor: Tema.carga), style: StrokeStyle(lineWidth: max(2, tamano / 6), lineCap: .round))
                 .frame(width: tamano, height: tamano)
                 .rotationEffect(.degrees(vuelta * 360))
         }
@@ -58,13 +58,13 @@ func imagenRuedaCarga(angulo: CGFloat) -> NSImage {
         let pista = NSBezierPath()
         pista.appendArc(withCenter: centro, radius: radio, startAngle: 0, endAngle: 360)
         pista.lineWidth = 2
-        NSColor.systemBlue.withAlphaComponent(0.25).setStroke()
+        Tema.carga.withAlphaComponent(0.25).setStroke()
         pista.stroke()
         let arco = NSBezierPath()
         arco.appendArc(withCenter: centro, radius: radio, startAngle: angulo, endAngle: angulo + 260)
         arco.lineWidth = 2.2
         arco.lineCapStyle = .round
-        NSColor.systemBlue.setStroke()
+        Tema.carga.setStroke()
         arco.stroke()
         return true
     }
