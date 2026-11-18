@@ -38,7 +38,15 @@ let carpetaVideos = carpetaNoteTaker + "/Note-Taker-Videos"
 /// Transcripciones; ULTIMA_TRANSCRIPCION.txt siempre es la más reciente.
 let carpetaNotas = carpetaNoteTaker + "/Note-Taker-Transcriptions"
 
-let dirTrabajo = NSString(string: "~/.note-taker").expandingTildeInPath
+/// Carpeta propia de Note Taker: todo lo que instala o genera vive aquí (borrar `whisper/` desinstala Whisper y sus modelos).
+let carpetaTrabajo = NSString(string: "~/.note-taker").expandingTildeInPath
+/// Whisper: `entorno/` (Python + openai-whisper), `modelos/` y `note_taker_transcribir.py` (lo deja instalar_whisper.sh / el compilador).
+let carpetaWhisper = carpetaTrabajo + "/whisper"
+/// Registros de la app y de las transcripciones.
+let carpetaRegistros = carpetaTrabajo + "/registros"
+/// Archivos de trabajo de la grabación en curso (el crudo se borra al mezclar).
+let carpetaTemporal = carpetaTrabajo + "/temporal"
+let dirTrabajo = carpetaTemporal
 let archivoPid = dirTrabajo + "/grabando.pid"
 
 func ayuda() -> Never {
@@ -106,18 +114,18 @@ func presetCLI(_ nombre: String) -> (ancho: Double, fps: Int, bpp: Double, minBr
 /// Corre Whisper sobre el video y deja la transcripción en ~/Movies/Note-Taker/Note-Taker-Transcriptions (ULTIMA_TRANSCRIPCION.txt es siempre la más reciente).
 func transcribirCLI(_ video: URL, idioma: String) -> Bool {
     let envPy = ProcessInfo.processInfo.environment["NOTE_TAKER_PYTHON"]
-    let porDefecto = NSString(string: "~/.note-taker/whisper-venv/bin/python").expandingTildeInPath
+    let porDefecto = carpetaWhisper + "/entorno/bin/python"
     guard let python = [envPy, porDefecto].compactMap({ $0 }).first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
         aviso("⚠️ Whisper no está instalado: ejecuta instalar_whisper.sh (ver README).")
         return false
     }
-    let script = NSString(string: "~/.note-taker/note_taker_transcribir.py").expandingTildeInPath
+    let script = carpetaWhisper + "/note_taker_transcribir.py"
     guard FileManager.default.fileExists(atPath: script) else {
         aviso("⚠️ Falta \(script): vuelve a ejecutar note_taker_cli_compilar.sh.")
         return false
     }
     let carpeta = carpetaNotas
-    print("📝 Transcribiendo con Whisper (idioma: \(idioma)); puede tardar unos minutos…")
+    print("📝 Transcribiendo con Whisper (modelo turbo, idioma: \(idioma)); puede tardar unos minutos…")
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/nice")
     p.arguments = ["-n", "10", python, script, video.path, "--out", carpeta, "--lang", idioma, "--ultima"]

@@ -4,6 +4,7 @@ import AppKit
 import AVFoundation
 import Carbon
 import ServiceManagement
+import ScreenCaptureKit
 
 func manejadorAtajo(_ siguiente: EventHandlerCallRef?, _ evento: EventRef?, _ datos: UnsafeMutableRawPointer?) -> OSStatus {
     Task { @MainActor in AppDelegate.compartido?.alternar() }
@@ -38,13 +39,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var teclaRef: EventHotKeyRef?
     var mantenerMonitorHasta = Date.distantPast
     var colaTranscripcion: [URL] = []
-    var transcribiendo = false
+    /// Espejo de `estado.transcribiendo`: la vista lo usa para desactivar el botón y mostrar «Transcribiendo video…».
+    var transcribiendo: Bool { get { estado.transcribiendo } set { estado.transcribiendo = newValue } }
+    var videoEnCurso: URL?
     var tokenAviso = 0
+    let aviso = AvisoFlotante()
+    let selector = SelectorArea()
+    let selectorVentana = SelectorVentana()
+    var tokenMonitor = 0
+    var ruedaTimer: Timer?
+    var anguloRueda: CGFloat = 90
+    /// Si macOS ocultó el botón al ponerle el tiempo (no cabía en la barra), esta grabación sigue solo con el icono.
+    var sinTiempoEnBarra = false
+    var botonOcultoSeguidos = 0
 
     func applicationDidFinishLaunching(_ n: Notification) {
         AppDelegate.compartido = self
         motor = Motor(ajustes: ajustes)
         ajustes.alCambiar = { [weak self] in self?.motor.actualizarGanancias() }
+        ajustes.alCambiarCaptura = { [weak self] in self?.reiniciarMonitorTrasCambio() }
         motor.alError = { [weak self] msg in self?.errorMotor(msg) }
         configurarItem()
         configurarPopover()
@@ -72,8 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func icono(grabando: Bool) -> NSImage? {
-        let img = NSImage(systemSymbolName: grabando ? "record.circle.fill" : "waveform.circle", accessibilityDescription: "Note Taker")
-        if grabando { return img?.withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [.systemRed])) }
+        if grabando { return imagenBotonStop() }  // botón de stop: cuadrado rojo
+        let img = NSImage(systemSymbolName: "waveform.circle", accessibilityDescription: "Note Taker")
         img?.isTemplate = true
         return img
     }
@@ -81,12 +94,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func actualizarItem() {
         guard let b = item.button else { return }
         let g = estado.fase == .grabando
-        b.image = icono(grabando: g)
-        b.title = g ? " \(mmss(estado.segundos))" : (transcribiendo ? " …" : "")
+        let ocupado = estado.fase == .cerrando || transcribiendo
+        b.toolTip = g ? "Grabando \(mmss(estado.segundos)) · clic para detener y guardar" : (ocupado ? "Guardando o transcribiendo…" : "Note Taker")
+        if g || !ocupado {
+            // Grabando: botón de stop rojo (un clic detiene y guarda). Inactivo: la onda de siempre. Solo el icono, sin texto: con el
+            // indicador de grabación de macOS y el notch no cabe más y macOS oculta el botón; el tiempo va en el texto emergente.
+            ruedaTimer?.invalidate(); ruedaTimer = nil
+            b.image = icono(grabando: g)
+            if g && !sinTiempoEnBarra { b.attributedTitle = tiempoEnBarra(estado.segundos); vigilarBoton() }
+            else { b.attributedTitle = NSAttributedString(string: "") }
+        } else {
+            // Guardando o transcribiendo (y sin grabar): el icono pasa a una rueda de carga azul que gira.
+            b.title = ""
+            if ruedaTimer == nil {
+                b.image = imagenRuedaCarga(angulo: anguloRueda)
+                ruedaTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.girarRueda() }
+                }
+            }
+        }
+    }
+
+    /// Tiempo compacto (m:ss) con dígitos de ancho fijo, para que el botón no cambie de ancho cada segundo.
+    func tiempoEnBarra(_ s: Int) -> NSAttributedString {
+        let texto = s >= 3600 ? String(format: " %d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60) : String(format: " %d:%02d", s / 60, s % 60)
+        return NSAttributedString(string: texto, attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)])
+    }
+
+    /// Si macOS oculta el botón porque con el tiempo no cabe en la barra (su ventana deja de estar «visible»), tras dos segundos seguidos
+    /// se queda solo el icono; el tiempo sigue en el texto emergente. En la siguiente grabación se vuelve a intentar con el tiempo.
+    func vigilarBoton() {
+        guard let w = item.button?.window else { return }
+        if w.occlusionState.contains(.visible) { botonOcultoSeguidos = 0; return }
+        botonOcultoSeguidos += 1
+        if botonOcultoSeguidos >= 2 {
+            botonOcultoSeguidos = 0
+            sinTiempoEnBarra = true
+            item.button?.attributedTitle = NSAttributedString(string: "")
+            logApp("barra: macOS ocultó el botón con el tiempo (no cabe en la barra); queda solo el icono")
+        }
+    }
+
+    func girarRueda() {
+        anguloRueda -= 30
+        item.button?.image = imagenRuedaCarga(angulo: anguloRueda)
     }
 
     @objc func clicItem(_ sender: Any?) {
         if NSApp.currentEvent?.type == .rightMouseUp { mostrarMenuContextual(); return }
+        // Todo minimizado: mientras se graba, un clic en el icono (botón de stop) detiene y guarda, y la cadena sigue sola
+        // (rueda azul, transcripción y aviso «Video transcrito»). El panel completo solo se abre para iniciar o con clic derecho.
+        if motor.modo == .grabando { popover.performClose(nil); alternar(); return }
+        if motor.modo == .cerrando { return }
         if popover.isShown { popover.performClose(nil) } else { mostrarPopover() }
     }
 
@@ -94,6 +153,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let m = NSMenu()
         let a = NSMenuItem(title: estado.fase == .grabando ? "Detener y guardar" : "Iniciar grabación", action: #selector(menuAlternar), keyEquivalent: "")
         a.target = self; m.addItem(a)
+        let p = NSMenuItem(title: "Mostrar panel", action: #selector(menuPanel), keyEquivalent: "")
+        p.target = self; m.addItem(p)
         let s = NSMenuItem(title: "Salir", action: #selector(menuSalir), keyEquivalent: "")
         s.target = self; m.addItem(s)
         item.menu = m
@@ -103,6 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     @objc func menuAlternar() { alternar() }
     @objc func menuSalir() { salir() }
+    @objc func menuPanel() { if !popover.isShown { mostrarPopover() } }
 
     func configurarPopover() {
         popover.behavior = .transient
@@ -128,13 +190,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     /// Aviso chico bajo el botón; se quita solo (si se vuelve a pulsar, el plazo se reinicia).
-    func mostrarAvisoYaTranscrito() {
+    /// Advertencia flotante bajo el icono de la barra (solo si el panel está cerrado; abierto, el panel ya muestra el mensaje).
+    func mostrarAdvertencia(_ texto: String) {
+        if !popover.isShown { aviso.mostrar(texto, advertencia: true, bajo: item.button) }
+    }
+
+    /// Aviso chico que se quita solo: dentro del panel si está abierto; si no, flotante bajo el icono de la barra.
+    func mostrarAviso(_ texto: String) {
         tokenAviso += 1
         let mio = tokenAviso
-        estado.avisoYaTranscrito = true
+        estado.avisoTexto = texto
+        if !popover.isShown { aviso.mostrar(texto, bajo: item.button) }
         Task {
             try? await Task.sleep(nanoseconds: 3_500_000_000)
-            if tokenAviso == mio { estado.avisoYaTranscrito = false }
+            if tokenAviso == mio { estado.avisoTexto = nil }
         }
     }
 
@@ -150,6 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         buscarUltimoVideo()
         refrescarPermisos(pedir: false)
         refrescarMicrofonos()
+        refrescarObjetivos()
         popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -200,14 +270,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         case .alternarGrabacion: alternar()
         case .calibrarVoz: calibrar()
         case .transcribirUltimo:
+            // Ya hay una transcripción en curso: se ignora el clic (aunque el botón se pulse varias veces, corre una sola).
+            guard !transcribiendo else { return }
             buscarUltimoVideo()
             if estado.ultimoTranscrito == true {
-                mostrarAvisoYaTranscrito()
+                mostrarAviso("Ya está transcrito")
             } else if let r = estado.ultimoArchivo, !r.isEmpty {
                 iniciarTranscripcion(URL(fileURLWithPath: r))
             } else {
                 estado.mensaje = "Aún no hay videos grabados."
             }
+        case .elegirArea: elegirArea(iniciarDespues: false)
+        case .elegirVentana: elegirVentana(iniciarDespues: false)
         case .abrirCarpetaNotas:
             try? FileManager.default.createDirectory(atPath: carpetaNotas, withIntermediateDirectories: true)
             NSWorkspace.shared.open(URL(fileURLWithPath: carpetaNotas))
@@ -263,6 +337,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func iniciar() async {
         estado.mensaje = nil
+        // «Qué grabar»: en modo Área o Ventana sin elegir, se abre el selector (arrastrar o pasar el puntero) y se graba al elegir.
+        if ajustes.modoCaptura == ModoCaptura.area.rawValue && ajustes.areaW < 16 { elegirArea(iniciarDespues: true); return }
+        if ajustes.modoCaptura == ModoCaptura.ventana.rawValue && ajustes.ventanaCaptura == 0 { elegirVentana(iniciarDespues: true); return }
+        if ajustes.modoCaptura == ModoCaptura.ventana.rawValue { _ = await traerAlFrenteSiEsMiniatura(ajustes.ventanaCaptura) }  // por si volvió a la columna
         if !CGPreflightScreenCaptureAccess() {
             estado.permisoPantalla = false
             estado.mensaje = "Primero da el permiso de Grabación de pantalla y audio del sistema."
@@ -272,6 +350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let err = await motor.iniciarGrabacion() { estado.mensaje = err; return }
         estado.fase = .grabando
         estado.segundos = 0
+        sinTiempoEnBarra = false; botonOcultoSeguidos = 0  // cada grabación vuelve a intentar mostrar el tiempo
         actualizarItem()
         popover.performClose(nil) // ya grabando: el panel se cierra solo (si no, se queda fijo hasta volver a pulsar)
     }
@@ -284,28 +363,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         buscarUltimoVideo()
         estado.fase = .inactivo
         actualizarItem()
-        if ajustes.transcribirAlTerminar, let ruta = r?.ruta, !ruta.isEmpty, FileManager.default.fileExists(atPath: ruta) {
-            iniciarTranscripcion(URL(fileURLWithPath: ruta))
+        if let ruta = r?.ruta, !ruta.isEmpty, FileManager.default.fileExists(atPath: ruta) {
+            if ajustes.transcribirAlTerminar { iniciarTranscripcion(URL(fileURLWithPath: ruta)) }  // el aviso llega al terminar de transcribir
+            else { mostrarAviso("Video guardado") }
+        } else {
+            mostrarAdvertencia("No se guardó la grabación")
         }
         if popoverAbierto { _ = await motor.iniciarMonitor() }
     }
 
     /// Whisper de uno en uno: si llega otra grabación mientras transcribe, espera su turno.
     func iniciarTranscripcion(_ url: URL) {
+        // Un solo comando de transcripción por video: si ya se transcribe o espera turno, se ignora (evita cargar el modelo varias veces).
+        guard url != videoEnCurso, !colaTranscripcion.contains(url) else { return }
         colaTranscripcion.append(url)
         if !transcribiendo { procesarCola() }
     }
 
     func procesarCola() {
-        guard !colaTranscripcion.isEmpty else { transcribiendo = false; actualizarItem(); return }
+        guard !colaTranscripcion.isEmpty else { transcribiendo = false; videoEnCurso = nil; actualizarItem(); return }
         transcribiendo = true
         let url = colaTranscripcion.removeFirst()
+        videoEnCurso = url
         estado.transcripcion = .enCurso(url.lastPathComponent)
         actualizarItem()
         Task {
             let r = await transcribirVideo(url, idioma: ajustes.idiomaWhisper)
             estado.transcripcion = r.ok ? .lista(r.texto) : .error(r.texto)
             actualizarUltimoTranscrito()
+            if r.ok { mostrarAviso("Video transcrito") }
             procesarCola()
         }
     }
@@ -319,6 +405,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func errorMotor(_ msg: String) {
         estado.mensaje = msg
+        mostrarAdvertencia(String(msg.prefix(80)))
         if motor.modo == .grabando { Task { await detener() } }
     }
 
@@ -387,14 +474,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     // MARK: URL (notetaker://iniciar | detener | alternar | mostrar | ocultar | calibrar | mic?db=N | sistema?db=N)
 
+    // MARK: Qué grabar (pantalla, ventana o área)
+
+    /// Vuelve a leer las pantallas que se pueden grabar y comprueba que la ventana elegida siga visible; `alTerminar` se llama al terminar.
+    func refrescarObjetivos(alTerminar: (() -> Void)? = nil) {
+        guard CGPreflightScreenCaptureAccess() else { alTerminar?(); return }
+        Task {
+            if let c = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true) {
+                estado.pantallas = listarPantallas(c)
+                if ajustes.ventanaCaptura != 0, !c.windows.contains(where: { Int($0.windowID) == ajustes.ventanaCaptura && $0.isOnScreen }) {
+                    ajustes.ventanaCaptura = 0; estado.ventanaTexto = ""  // la ventana elegida se cerró o ya no está a la vista
+                }
+                if ajustes.pantallaCaptura != 0, !estado.pantallas.contains(where: { $0.id == ajustes.pantallaCaptura }) { ajustes.pantallaCaptura = 0 }
+            }
+            alTerminar?()
+        }
+    }
+
+    /// Cierra el panel y muestra el selector de área sobre las pantallas. Al elegir: guarda el área y, si se venía a grabar, empieza.
+    func elegirArea(iniciarDespues: Bool) {
+        popover.performClose(nil)
+        selector.iniciar(alElegir: { [weak self] rect, pantallaID in
+            guard let self else { return }
+            self.ajustes.areaX = rect.minX; self.ajustes.areaY = rect.minY
+            self.ajustes.areaW = rect.width; self.ajustes.areaH = rect.height
+            self.ajustes.areaPantalla = pantallaID == Int(CGMainDisplayID()) ? 0 : pantallaID
+            self.ajustes.modoCaptura = ModoCaptura.area.rawValue
+            if iniciarDespues {
+                Task { try? await Task.sleep(nanoseconds: 350_000_000); await self.iniciar() }  // la capa tenue ya no debe salir en el video
+            } else { self.mostrarPopover() }
+        }, alCancelar: { [weak self] in if !iniciarDespues { self?.mostrarPopover() } })
+    }
+
+    /// Cierra el panel y muestra la capa del selector: al pasar el puntero se resalta la ventana de abajo y un clic la elige.
+    func elegirVentana(iniciarDespues: Bool) {
+        popover.performClose(nil)
+        selectorVentana.iniciar(alElegir: { [weak self] v in
+            guard let self else { return }
+            self.ajustes.ventanaCaptura = v.id
+            self.estado.ventanaTexto = v.etiqueta
+            self.ajustes.modoCaptura = ModoCaptura.ventana.rawValue
+            Task {
+                _ = await traerAlFrenteSiEsMiniatura(v.id)  // una miniatura de Stage Manager no se puede grabar tal cual: se trae al centro
+                if iniciarDespues {
+                    try? await Task.sleep(nanoseconds: 350_000_000)  // la capa tenue ya no debe salir en el video
+                    await self.iniciar()
+                } else { self.mostrarPopover() }
+            }
+        }, alCancelar: { [weak self] in if !iniciarDespues { self?.mostrarPopover() } })
+    }
+
+    /// El monitor de niveles usa el mismo objetivo que la grabación: si se cambia, se reinicia (con una pausa por si cambian varios ajustes).
+    func reiniciarMonitorTrasCambio() {
+        tokenMonitor += 1
+        let mio = tokenMonitor
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard tokenMonitor == mio else { return }
+            await motor.reiniciarMonitor()
+        }
+    }
+
     @objc func manejarURL(_ ev: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
         guard let s = ev.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue, let u = URL(string: s) else { return }
         let db = URLComponents(url: u, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "db" })?.value.flatMap(Double.init)
         let n = URLComponents(url: u, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "n" })?.value.flatMap(Int.init)
+        var q: [String: String] = [:]
+        for i in URLComponents(url: u, resolvingAgainstBaseURL: false)?.queryItems ?? [] { q[i.name] = i.value ?? "" }
+        func num(_ k: String) -> Double? { q[k].flatMap(Double.init) }
         switch u.host {
         case "iniciar": if motor.modo != .grabando { alternar() }
         case "detener": if motor.modo == .grabando { alternar() }
         case "alternar": alternar()
+        case "icono": clicItem(nil)  // como pulsar el icono de la barra: grabando = detener; si no, abre o cierra el panel
         case "mostrar": mostrarPopover()
         case "ocultar": popover.performClose(nil)
         case "calibrar": calibrar()
@@ -404,6 +556,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         case "calidad": if let n = n { ajustes.calidadVideo = max(0, min(presetsVideo.count - 1, n)) }
         case "mic": if let db = db { ajustes.gananciaMicDB = max(0, min(36, db)) }
         case "sistema": if let db = db { ajustes.gananciaSisDB = max(-18, min(12, db)) }
+        // «Qué grabar» (para Atajos y pruebas): captura?modo=pantalla|ventana|area · pantalla?n=1.. (0 = principal) · ventana?app=texto
+        // · ventana-elegir · ventana-prueba?x=&y=[&clic=1]
+        // · area?x=&y=&w=&h= (puntos, origen arriba a la izquierda) · area-elegir · area-prueba?x=&y=&w=&h= (arrastre simulado) · actualizar
+        case "captura": if let m = q["modo"], ModoCaptura(rawValue: m) != nil { ajustes.modoCaptura = m }
+        case "pantalla":
+            refrescarObjetivos { [self] in
+                guard let n = n else { return }
+                if n <= 0 { ajustes.pantallaCaptura = 0 }
+                else if n <= estado.pantallas.count { let id = estado.pantallas[n - 1].id; ajustes.pantallaCaptura = id == Int(CGMainDisplayID()) ? 0 : id }
+                ajustes.modoCaptura = ModoCaptura.pantalla.rawValue
+            }
+        case "ventana":
+            if let t = q["app"]?.lowercased(), let v = ventanasVisibles().first(where: { $0.app.lowercased().contains(t) || $0.titulo.lowercased().contains(t) }) {
+                ajustes.ventanaCaptura = v.id; estado.ventanaTexto = v.etiqueta; ajustes.modoCaptura = ModoCaptura.ventana.rawValue
+            }
+        case "ventana-elegir": elegirVentana(iniciarDespues: false)
+        case "ventana-prueba":  // pasa el puntero (y, con clic=1, pulsa) en un punto de la pantalla: x, y en puntos, origen arriba a la izquierda
+            if let x = num("x"), let y = num("y") {
+                if !selectorVentana.enCurso { elegirVentana(iniciarDespues: false) }
+                let clic = (q["clic"] ?? "0") != "0"
+                Task { try? await Task.sleep(nanoseconds: 700_000_000); selectorVentana.simular(punto: CGPoint(x: x, y: y), clic: clic) }
+            }
+        case "area":
+            if let x = num("x"), let y = num("y"), let w = num("w"), let h = num("h") {
+                ajustes.areaX = x; ajustes.areaY = y; ajustes.areaW = w; ajustes.areaH = h; ajustes.areaPantalla = 0
+                ajustes.modoCaptura = ModoCaptura.area.rawValue
+            }
+        case "area-elegir": elegirArea(iniciarDespues: false)
+        case "area-prueba":
+            if let x = num("x"), let y = num("y"), let w = num("w"), let h = num("h") {
+                if !selector.enCurso { elegirArea(iniciarDespues: false) }
+                Task { try? await Task.sleep(nanoseconds: 800_000_000); selector.simular(CGRect(x: x, y: y, width: w, height: h)) }
+            }
+        case "actualizar": refrescarObjetivos()
+        case "panel-transcripcion": if let n = n { ajustes.transcripcionAbierta = (n != 0) }  // despliega (1) o pliega (0) la sección de transcripción
         default: break
         }
     }

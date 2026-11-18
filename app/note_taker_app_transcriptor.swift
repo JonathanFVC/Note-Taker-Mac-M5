@@ -9,6 +9,15 @@ let carpetaVideos = carpetaNoteTaker + "/Note-Taker-Videos"
 /// Transcripciones; ULTIMA_TRANSCRIPCION.txt siempre es la más reciente.
 let carpetaNotas = carpetaNoteTaker + "/Note-Taker-Transcriptions"
 
+/// Carpeta propia de Note Taker: todo lo que instala o genera vive aquí (borrar `whisper/` desinstala Whisper y sus modelos).
+let carpetaTrabajo = NSString(string: "~/.note-taker").expandingTildeInPath
+/// Whisper: `entorno/` (Python + openai-whisper), `modelos/` y `note_taker_transcribir.py` (lo deja instalar_whisper.sh / el compilador).
+let carpetaWhisper = carpetaTrabajo + "/whisper"
+/// Registros de la app y de las transcripciones.
+let carpetaRegistros = carpetaTrabajo + "/registros"
+/// Archivos de trabajo de la grabación en curso (el crudo se borra al mezclar).
+let carpetaTemporal = carpetaTrabajo + "/temporal"
+
 enum EstadoTranscripcion: Equatable {
     case ninguna
     case enCurso(String)   // nombre del video
@@ -23,33 +32,32 @@ let idiomasWhisper = [
     OpcionIdioma(codigo: "auto", nombre: "Detectar idioma")
 ]
 
-/// Python del entorno de Whisper: variable NOTE_TAKER_PYTHON o ~/.note-taker/whisper-venv (lo crea instalar_whisper.sh).
+/// Python del entorno de Whisper: variable NOTE_TAKER_PYTHON o ~/.note-taker/whisper/entorno (lo crea instalar_whisper.sh).
 func rutaPythonWhisper() -> String? {
     if let e = ProcessInfo.processInfo.environment["NOTE_TAKER_PYTHON"], FileManager.default.isExecutableFile(atPath: e) { return e }
-    let p = NSString(string: "~/.note-taker/whisper-venv/bin/python").expandingTildeInPath
+    let p = carpetaWhisper + "/entorno/bin/python"
     return FileManager.default.isExecutableFile(atPath: p) ? p : nil
 }
 
 func rutaScriptTranscribir() -> String? {
     if let r = Bundle.main.path(forResource: "note_taker_transcribir", ofType: "py") { return r }
-    let p = NSString(string: "~/.note-taker/note_taker_transcribir.py").expandingTildeInPath
+    let p = carpetaWhisper + "/note_taker_transcribir.py"
     return FileManager.default.fileExists(atPath: p) ? p : nil
 }
 
-/// Corre Whisper sobre el video (con prioridad baja) y devuelve la ruta del .txt, o el motivo del fallo.
-func transcribirVideo(_ video: URL, idioma: String, modelo: String = "turbo") async -> (ok: Bool, texto: String) {
+/// Corre Whisper (modelo turbo, el único de Note Taker) sobre el video (con prioridad baja) y devuelve la ruta del .txt, o el motivo del fallo.
+func transcribirVideo(_ video: URL, idioma: String) async -> (ok: Bool, texto: String) {
     guard let py = rutaPythonWhisper() else { return (false, "Whisper no está instalado: ejecuta instalar_whisper.sh (ver README).") }
     guard let script = rutaScriptTranscribir() else { return (false, "No se encontró note_taker_transcribir.py.") }
     return await Task.detached(priority: .utility) { () -> (Bool, String) in
-        let trabajo = NSString(string: "~/.note-taker").expandingTildeInPath
-        try? FileManager.default.createDirectory(atPath: trabajo, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(atPath: carpetaRegistros, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(atPath: carpetaNotas, withIntermediateDirectories: true)
-        let log = trabajo + "/transcripcion.log"
+        let log = carpetaRegistros + "/transcripcion.log"
         FileManager.default.createFile(atPath: log, contents: nil)
         let h = FileHandle(forWritingAtPath: log)
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/nice")
-        p.arguments = ["-n", "10", py, script, video.path, "--out", carpetaNotas, "--model", modelo, "--lang", idioma, "--ultima"]
+        p.arguments = ["-n", "10", py, script, video.path, "--out", carpetaNotas, "--lang", idioma, "--ultima"]
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
         env["PYTHONUNBUFFERED"] = "1"

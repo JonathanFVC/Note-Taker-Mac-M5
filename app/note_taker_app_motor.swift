@@ -15,6 +15,8 @@ struct ResultadoGrabacion {
     var picoSis: Float
     var picoMic: Float
     var avisos: [String]
+    /// Notas informativas (no son fallos): se muestran en gris.
+    var notas: [String] = []
 }
 
 /// Presets de video: solo cambian la imagen; el audio no se toca.
@@ -34,8 +36,12 @@ let presetsVideo = [
     PresetVideo(nombre: "Alta", ancho: 1920, fps: 30, bpp: 0.07, minBitrate: 2_000_000, mbPorHora: 2200)
 ]
 
+/// Crea `registros/` una sola vez (los globales de Swift se inicializan al primer uso).
+private let registrosListos: Bool = { try? FileManager.default.createDirectory(atPath: carpetaRegistros, withIntermediateDirectories: true); return true }()
+
 func logApp(_ s: String) {
-    let ruta = NSString(string: "~/.note-taker/app.log").expandingTildeInPath
+    _ = registrosListos
+    let ruta = carpetaRegistros + "/app.log"
     let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"
     let linea = "\(f.string(from: Date())) \(s)\n"
     if let h = FileHandle(forWritingAtPath: ruta) { h.seekToEndOfFile(); h.write(Data(linea.utf8)); try? h.close() }
@@ -262,36 +268,31 @@ final class Motor: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioDat
     // MARK: Captura
 
     @MainActor
-    func arrancarStream(completo: Bool) async throws {
+    func arrancarStream() async throws {
         let contenido = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        guard let pantalla = contenido.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? contenido.displays.first else {
-            throw NSError(domain: "grabar", code: 1, userInfo: [NSLocalizedDescriptionKey: "No se encontró ninguna pantalla"])
-        }
-        let modoPant = CGDisplayCopyDisplayMode(pantalla.displayID)
-        let pw = modoPant?.pixelWidth ?? pantalla.width * 2, ph = modoPant?.pixelHeight ?? pantalla.height * 2
-        var w = 160, h = max(2, (160 * ph / max(pw, 1) / 2) * 2), fpsUso = 1
-        if completo {
-            let pre = presetsVideo[max(0, min(presetsVideo.count - 1, ajustes.calidadVideo))]
-            let esc = min(1.0, pre.ancho / Double(pw))
-            w = (Int(Double(pw) * esc) / 2) * 2; h = (Int(Double(ph) * esc) / 2) * 2; fpsUso = pre.fps
-            q.sync { ancho = w; alto = h; fps = fpsUso; bpp = pre.bpp; minBitrate = pre.minBitrate }
-            logApp("video: preset \(pre.nombre) \(w)x\(h) a \(fpsUso) fps")
-        }
+        let objetivo = try resolverObjetivo(contenido)  // pantalla, ventana o área, según «Qué grabar»
+        let pw = objetivo.pixelesAncho, ph = objetivo.pixelesAlto
+        let pre = presetsVideo[max(0, min(presetsVideo.count - 1, ajustes.calidadVideo))]
+        let esc = min(1.0, pre.ancho / Double(pw))
+        let w = max(2, (Int(Double(pw) * esc) / 2) * 2), h = max(2, (Int(Double(ph) * esc) / 2) * 2), fpsUso = pre.fps
+        q.sync { ancho = w; alto = h; fps = fpsUso; bpp = pre.bpp; minBitrate = pre.minBitrate }
+        logApp("video: preset \(pre.nombre) \(w)x\(h) a \(fpsUso) fps · \(objetivo.descripcion)")
         let cfg = SCStreamConfiguration()
         cfg.width = w; cfg.height = h
+        if let a = objetivo.area { cfg.sourceRect = a }
         cfg.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fpsUso))
         cfg.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         cfg.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
         cfg.colorSpaceName = CGColorSpace.sRGB
         cfg.showsCursor = true
-        cfg.queueDepth = completo ? 6 : 3
+        cfg.queueDepth = 6
         cfg.capturesAudio = true
         cfg.sampleRate = 48000
         cfg.channelCount = 2
         cfg.excludesCurrentProcessAudio = false
         let usarMic = ajustes.microfonoActivo && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         q.sync { hayMicEnConfig = usarMic }
-        let filtro = SCContentFilter(display: pantalla, excludingApplications: [], exceptingWindows: [])
+        let filtro = objetivo.filtro
         let s = SCStream(filter: filtro, configuration: cfg, delegate: self)
         try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: q)
         try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: q)
@@ -360,10 +361,14 @@ final class Motor: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioDat
 
     @MainActor
     func iniciarMonitor() async -> String? {
+        // Monitor de niveles: SOLO el micrófono (AVCaptureSession), sin captura de pantalla. Mantiene vivo el medidor de voz y el
+        // «Aislamiento de voz» sin que macOS muestre su píldora morada de grabación de pantalla (esa solo sale al grabar de verdad).
         guard modo == .inactivo else { return nil }
         modo = .monitor
-        do { try await arrancarStream(completo: false); return nil }
-        catch { modo = .inactivo; return error.localizedDescription }
+        let usarMic = ajustes.microfonoActivo && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        q.sync { hayMicEnConfig = usarMic }
+        if usarMic { await arrancarMic() }
+        return nil
     }
 
     @MainActor
@@ -556,7 +561,7 @@ final class Motor: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioDat
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         let ts = f.string(from: Date())
         let salida = carpetaVideos
-        let trabajo = NSString(string: "~/.note-taker").expandingTildeInPath
+        let trabajo = carpetaTemporal
         try? FileManager.default.createDirectory(atPath: salida, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(atPath: trabajo, withIntermediateDirectories: true)
         urlFinal = URL(fileURLWithPath: salida + "/nota_\(ts).mov")
@@ -565,7 +570,7 @@ final class Motor: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioDat
         q.sync { urlCrudo = crudo; escribiendo = true; reiniciarEscritor() }
         modo = .grabando
         do {
-            try await arrancarStream(completo: true)
+            try await arrancarStream()
             inicioGrabacion = Date()
             return nil
         } catch {
@@ -618,10 +623,17 @@ final class Motor: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioDat
         }
         let (pS, pM) = leerPicosGrab()
         let tam = ((try? FileManager.default.attributesOfItem(atPath: final.path)[.size]) as? NSNumber)?.doubleValue ?? 0
-        if pS <= 0.0001 { avisos.append("No se captó audio del Mac: ¿sonaba algo? (el contenido con DRM no se puede grabar).") }
+        var notas: [String] = []
+        let hayVoz = ajustes.microfonoActivo && pM > 0.0001
+        if pS <= 0.0001 {
+            // Solo voz y la Mac callada es normal (nadie reproducía nada): nota neutra; sin voz tampoco, es un aviso.
+            if hayVoz { notas.append("Solo se grabó tu voz; del Mac no llegó sonido (normal si no sonaba nada).") }
+            else { avisos.append("No se captó audio del Mac: ¿sonaba algo? (el contenido con DRM no se puede grabar).") }
+        }
         if ajustes.microfonoActivo && pM <= 0.0001 { avisos.append("El micrófono no registró sonido: revisa el permiso de Micrófono y la ganancia.") }
+        if hayVoz && pM >= 0.89 { notas.append("Tu voz llegó al límite (pico ≈ 0 dB): si suena aplastada, baja un poco «Nivel de mi voz».") }
         if descartadosFinal > 0 { avisos.append("Se descartaron \(descartadosFinal) bloques por sobrecarga.") }
         modo = .inactivo
-        return ResultadoGrabacion(ruta: final.path, duracion: duracion, megas: tam / 1_048_576, picoSis: pS, picoMic: pM, avisos: avisos)
+        return ResultadoGrabacion(ruta: final.path, duracion: duracion, megas: tam / 1_048_576, picoSis: pS, picoMic: pM, avisos: avisos, notas: notas)
     }
 }
