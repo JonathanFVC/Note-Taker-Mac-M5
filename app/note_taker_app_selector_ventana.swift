@@ -131,7 +131,7 @@ final class SelectorVentana {
         self.alElegir = alElegir
         self.alCancelar = alCancelar
         for pantalla in NSScreen.screens {
-            let w = VentanaSelector(contentRect: pantalla.frame, styleMask: .borderless, backing: .buffered, defer: false, screen: pantalla)
+            let w = crearVentanaSelector(cubriendo: pantalla)
             w.level = .screenSaver
             w.isOpaque = false
             w.backgroundColor = .clear

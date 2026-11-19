@@ -6,6 +6,15 @@ final class VentanaSelector: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
+/// Capa del selector que cubre exactamente una pantalla. Sin `screen:` en el `init` (con él, `contentRect` se toma relativo a esa pantalla y en
+/// la segunda queda corrida el origen de la pantalla) y con el marco fijado en coordenadas globales.
+@MainActor
+func crearVentanaSelector(cubriendo pantalla: NSScreen) -> VentanaSelector {
+    let w = VentanaSelector(contentRect: pantalla.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    w.setFrame(pantalla.frame, display: false)
+    return w
+}
+
 final class VistaSelector: NSView {
     var inicio: NSPoint?
     var actual: NSPoint?
@@ -73,7 +82,7 @@ final class SelectorArea {
         guard !enCurso else { return }
         enCurso = true
         for pantalla in NSScreen.screens {
-            let w = VentanaSelector(contentRect: pantalla.frame, styleMask: .borderless, backing: .buffered, defer: false, screen: pantalla)
+            let w = crearVentanaSelector(cubriendo: pantalla)
             w.level = .screenSaver
             w.isOpaque = false
             w.backgroundColor = .clear
